@@ -1,189 +1,150 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"log"
-	"sync"
 	"time"
+
+	// _ "github.com/mattn/go-sqlite3"
+	"github.com/robfig/cron"
 )
 
-type JobStatus int
-
-const (
-	INPROGRESS JobStatus = iota
-	SUCCESS
-	FAILURE
-)
-
-type Database interface {
-	GetJobs() ([]Job, error)
-	UpdateStatus(id int, status JobStatus) error
+type CDCQueue interface {
+	Listen() <-chan *Job
 }
 
-type JobQueue interface {
-	PushJob(job Job)
-	PushJobs(jobs []Job)
-	PullJob() <-chan Job
+type Job struct {
+	Id   int
+	Name string
+	Cron string
 }
 
-type ChanQueue chan Job
-
-func (cq ChanQueue) PushJob(job Job) {
-	cq <- job
-}
-
-func (cq ChanQueue) PushJobs(jobs []Job) {
-	for _, job := range jobs {
-		cq <- job
+func NewJob(name, cron string) *Job {
+	return &Job{
+		Name: name,
+		Cron: cron,
 	}
 }
 
-func (cq ChanQueue) PullJob() <-chan Job {
-	return cq
+type Database interface {
+	Create(job *Job) error
 }
 
-func NewChanQueue() ChanQueue {
-	return make(ChanQueue)
+type DBWithCDC struct {
+	idInc   int
+	store   map[int]*Job
+	cdcChan chan *Job
 }
 
-type JobHandler func() error
-
-type Job struct {
-	Id      int
-	Runat   time.Time
-	Name    string
-	Cron    string
-	Handler JobHandler
-	// Retries int
-	// Timeout time.Time
-
-	// this is mainly for the user
-	LastRun time.Time
-	Status  JobStatus
+func NewDBWithCDC() *DBWithCDC {
+	return &DBWithCDC{
+		idInc:   0,
+		store:   make(map[int]*Job),
+		cdcChan: make(chan *Job),
+	}
 }
 
-func SayHello() error {
-	log.Println("Hello")
-	return errors.New("Uhoh, we have a failure")
-}
+func (db *DBWithCDC) Create(job *Job) error {
+	job.Id = db.idInc
+	db.idInc += 1
 
-func SayGoodbye() error {
-	log.Println("Goodbye")
+	db.store[job.Id] = job
+	db.cdcChan <- job
+
 	return nil
 }
 
-type JobDB struct {
-	mu    sync.Mutex
-	store []Job
+func (db *DBWithCDC) Listen() <-chan *Job {
+	return db.cdcChan
 }
 
-func (d *JobDB) GetJobs() ([]Job, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	return d.store, nil
+type QueService struct {
+	db Database
 }
 
-func (d *JobDB) UpdateStatus(id int, status JobStatus) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+func NewQueService(db Database) *QueService {
+	return &QueService{
+		db: db,
+	}
+}
 
-	for i := range d.store {
-		if d.store[i].Id == id {
-			d.store[i].Status = status
-			return nil
-		}
+func (q *QueService) Enqueue(job *Job) error {
+	if err := q.db.Create(job); err != nil {
+		return err
 	}
 
-	return errors.New("Job not found")
-}
-
-func NewJobDB() *JobDB {
-	return &JobDB{
-		store: []Job{
-			{1, time.Now().Add(2 * time.Second), "Say Hello", "* * * * *", SayHello, time.Now(), SUCCESS},
-			{2, time.Now().Add(4 * time.Second), "Say Goodbye", "* * * * *", SayGoodbye, time.Now(), FAILURE},
-		},
-	}
+	return nil
 }
 
 type Scheduler struct {
-	db    Database
-	queue JobQueue
+	cdcQueue   CDCQueue
+	scheduleDb Database
 }
 
-func NewScheduler(db Database, q JobQueue) *Scheduler {
+func NewScheduler(que CDCQueue, scheduleDb Database) *Scheduler {
 	return &Scheduler{
-		db:    db,
-		queue: q,
+		cdcQueue:   que,
+		scheduleDb: scheduleDb,
 	}
 }
 
 func (s *Scheduler) Run() {
 	for {
-		time.Sleep(time.Second * 1)
-		log.Println("Polling...")
-		s.Poll()
-	}
-}
-
-func (s *Scheduler) Poll() {
-	jobs, err := s.db.GetJobs()
-	if err != nil {
-		return
-	}
-
-	s.queue.PushJobs(jobs)
-}
-
-type Dispatcher struct {
-	db    Database
-	queue JobQueue
-	ctx   context.Context
-}
-
-func (d *Dispatcher) Start() error {
-	for {
 		select {
-		case job := <-d.queue.PullJob():
-			go d.Worker(job, d.ctx)
+		case job := <-s.cdcQueue.Listen():
+			s.Schedule(job)
 		}
 	}
 }
 
-// TODO implement retries and timeouts
-func (d *Dispatcher) Worker(job Job, ctx context.Context) {
-	if err := d.db.UpdateStatus(job.Id, INPROGRESS); err != nil {
-		log.Println(err)
-		return
+func (s *Scheduler) Schedule(job *Job) {
+	// TODO handler error
+	if err := s.scheduleDb.Create(job); err != nil {
+		panic(err)
 	}
-
-	if err := job.Handler(); err != nil {
-		log.Println("Job Failed")
-		d.db.UpdateStatus(job.Id, FAILURE)
-		return
-	}
-
-	log.Println("Job success")
-	d.db.UpdateStatus(job.Id, SUCCESS)
 }
 
-func NewDispatcher(db Database, q JobQueue) *Dispatcher {
-	return &Dispatcher{
-		db:    db,
-		queue: q,
-		ctx:   context.Background(),
+type ScheduleDBEntry struct {
+	*Job
+	runAt string
+}
+
+type ScheduleDB struct {
+	store map[int]*ScheduleDBEntry
+}
+
+func NewScheduleDB() *ScheduleDB {
+	return &ScheduleDB{
+		store: make(map[int]*ScheduleDBEntry),
 	}
+}
+
+func (s *ScheduleDB) Create(job *Job) error {
+	schedule, err := cron.Parse(job.Cron)
+	if err != nil {
+		return (err)
+	}
+
+	runAt := schedule.Next(time.Now())
+	t := runAt.UTC().Format("2006-01-02T15:04:05.000Z")
+	s.store[job.Id] = &ScheduleDBEntry{job, t}
+
+	for _, e := range s.store {
+		log.Println(e.Name, e.runAt)
+	}
+
+	return nil
 }
 
 func main() {
-	db := NewJobDB()
-	scheduler := NewScheduler(db, NewChanQueue())
+	jobsDb := NewDBWithCDC()
+	queService := NewQueService(jobsDb)
+
+	scheduleDB := NewScheduleDB()
+	scheduler := NewScheduler(jobsDb, scheduleDB)
 	go scheduler.Run()
 
-	dispatcher := NewDispatcher(db, scheduler.queue)
-	go dispatcher.Start()
+	queService.Enqueue(NewJob("Say Hello", "* * * * * *"))
+	queService.Enqueue(NewJob("Say Goodbye", "* * * * * *"))
 
 	select {}
 }
