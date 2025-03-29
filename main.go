@@ -14,10 +14,12 @@ import (
 
 type Env struct {
 	SqlitePath string
+	TimeFormat string
 }
 
 var APPENV = Env{
 	SqlitePath: "./scheduling.db",
+	TimeFormat: "2006-01-02T15:04:05.000Z",
 }
 
 type JobRepo interface {
@@ -97,6 +99,8 @@ func (s *Server) handleCron(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.JobRepo.CreateJob(&job)
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Success"))
 }
 
 func (s *Server) NewCronMux() *http.ServeMux {
@@ -145,10 +149,11 @@ func NewScheduler(que CDCQueue, scheduleRepo ScheduleRepo) *Scheduler {
 	}
 }
 
-func (s *Scheduler) Run() {
+func (s *Scheduler) Start() {
 	for {
 		job := s.cdcQueue.Listen()
 		if err := s.scheduleRepo.ScheduleJob(job); err != nil {
+			// TODO handle this error
 			panic(err)
 		}
 	}
@@ -163,12 +168,12 @@ func (s *Scheduler) Schedule(job *Job) {
 
 type ScheduleDBEntry struct {
 	*Job
-	runAt string
+	runAt time.Time
 }
 
 type ScheduleRepo interface {
 	ScheduleJob(job *Job) error
-	// GetJobsDueBefore(t time.Time) ([]*Job, error)
+	GetJobsDueBefore(timeString string) ([]*Job, error)
 }
 
 type InMemoryScheduleRepo struct {
@@ -187,11 +192,28 @@ func (s *InMemoryScheduleRepo) ScheduleJob(job *Job) error {
 		return (err)
 	}
 
-	runAt := schedule.Next(time.Now())
-	t := runAt.UTC().Format("2006-01-02T15:04:05.000Z")
-	s.store[job.Id] = &ScheduleDBEntry{job, t}
+	runAt := schedule.Next(time.Now()) // next run time after current time
+	s.store[job.Id] = &ScheduleDBEntry{job, runAt}
 
 	return nil
+}
+
+func (s *InMemoryScheduleRepo) GetJobsDueBefore(timeString string) ([]*Job, error) {
+	t, err := time.Parse("2006-01-02T15:04:05.000Z", timeString)
+	if err != nil {
+		// TODO handle this error
+		return nil, err
+	}
+
+	var res []*Job
+	for _, j := range s.store {
+		log.Println(j.runAt.String(), timeString)
+		if j.runAt.Before(t) {
+			res = append(res, j.Job)
+		}
+	}
+
+	return res, nil
 }
 
 func NewSqliteDb() *sql.DB {
@@ -221,12 +243,30 @@ func (e *Executor) Start() {
 	for {
 		select {
 		case <-ticker.C:
-			e.Pull()
+			log.Println("Polling")
+			e.Poll()
 		}
 	}
 }
 
-func (e *Executor) Pull() {
+func (e *Executor) Poll() {
+	t := time.Now().Format(APPENV.TimeFormat)
+
+	jobs, err := e.scheduleRepo.GetJobsDueBefore(t)
+	if err != nil {
+		// TODO handle this error
+		panic(err)
+	}
+
+	log.Printf("%d jobs found before %s", len(jobs), t)
+
+	for _, job := range jobs {
+		go e.Worker(job)
+	}
+}
+
+func (e *Executor) Worker(job *Job) {
+	log.Printf("Doing job %s with id %d", job.Name, job.Id)
 }
 
 func main() {
@@ -235,7 +275,10 @@ func main() {
 
 	scheduleRepo := NewInMemoryScheduleRepo()
 	scheduler := NewScheduler(jobRepo, scheduleRepo)
-	go scheduler.Run()
+	go scheduler.Start()
+
+	executor := NewExecutor(time.Duration(time.Second), scheduleRepo)
+	go executor.Start()
 
 	queService.Enqueue(NewJob("Say Hello", "* * * * * *"))
 	queService.Enqueue(NewJob("Say Goodbye", "* * * * * *"))
