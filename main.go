@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -12,10 +13,89 @@ import (
 	"github.com/robfig/cron"
 )
 
+type JobType uint8
+
+const (
+	TypeStart JobType = iota
+	// custom scripts
+	TypeCustom
+	// automated messaging
+	TypeEmail
+	TypeSlack
+	TypeDiscord
+
+	TypeEnd
+)
+
+type Status uint8
+
+const (
+	StatusStart Status = iota
+	StatusScheduled
+	StatusFailed
+	StatusRunning
+	StatusSuccess
+	StatusEnd
+)
+
+func (t JobType) Valid() bool {
+	log.Println(JobTypeToString(t))
+	return TypeStart < t && t < TypeEnd
+}
+
+func JobTypeToString(t JobType) string {
+	switch t {
+	case TypeCustom:
+		return "Custom"
+	case TypeEmail:
+		return "Email"
+	case TypeSlack:
+		return "Slack"
+	case TypeDiscord:
+		return "Discord"
+	}
+
+	return "not found"
+}
+
+type JobRunner func(job *Job) error
+
+func GetRunner(t JobType) (JobRunner, error) {
+	switch t {
+	case TypeEmail:
+		return EmailRunner, nil
+	case TypeDiscord:
+		return DiscordRunner, nil
+	case TypeSlack:
+		return SlackRunner, nil
+	}
+
+	return nil, ERROR_JOB_RUNNER_NOT_FOUND
+}
+
+func EmailRunner(job *Job) error {
+	return nil
+}
+
+func DiscordRunner(job *Job) error {
+	return nil
+}
+
+func SlackRunner(job *Job) error {
+	return nil
+}
+
 type Env struct {
 	SqlitePath string
 	TimeFormat string
 }
+
+var (
+	ERROR_INVALID_RETRY_LIMIT   = errors.New("Error invalid retry limit")
+	ERROR_INVALID_JOB_TYPE      = errors.New("Error invalid job type")
+	ERROR_JOB_NAME_NOT_PROVIDED = errors.New("Error job name not provided")
+	ERROR_JOB_RUNNER_NOT_FOUND  = errors.New("Error associated job runner not found")
+)
 
 var APPENV = Env{
 	SqlitePath: "./scheduling.db",
@@ -24,6 +104,7 @@ var APPENV = Env{
 
 type JobRepo interface {
 	CreateJob(job *Job) error
+	GetJobs() ([]*Job, error)
 }
 
 type CDCQueue interface {
@@ -31,16 +112,36 @@ type CDCQueue interface {
 }
 
 type Job struct {
-	Id   int
-	Name string `json:"Name"`
-	Cron string `json:"Cron"`
+	Id         int     `josn:"id"`
+	Name       string  `json:"name"`
+	Cron       string  `json:"cron"`
+	RetryLimit int     `json:"retry_limit"`
+	Type       JobType `json:"job_type"`
 }
 
-func NewJob(name, cron string) *Job {
+func NewJob(name, cron string, retryLimit int, jobType JobType) *Job {
 	return &Job{
-		Name: name,
-		Cron: cron,
+		Name:       name,
+		Cron:       cron,
+		RetryLimit: retryLimit,
+		Type:       jobType,
 	}
+}
+
+func (j *Job) Validate() error {
+	if len(j.Name) == 0 {
+		return ERROR_JOB_NAME_NOT_PROVIDED
+	}
+
+	if ok := j.Type.Valid(); !ok {
+		return ERROR_INVALID_JOB_TYPE
+	}
+
+	if j.RetryLimit <= 0 {
+		return ERROR_INVALID_RETRY_LIMIT
+	}
+
+	return nil
 }
 
 type DBWithCDC struct {
@@ -67,6 +168,14 @@ func (db *DBWithCDC) CreateJob(job *Job) error {
 	return nil
 }
 
+func (db *DBWithCDC) GetJobs() ([]*Job, error) {
+	res := make([]*Job, 0, len(db.store))
+	for _, job := range db.store {
+		res = append(res, job)
+	}
+	return res, nil
+}
+
 func (db *DBWithCDC) Listen() *Job {
 	return <-db.cdcChan
 }
@@ -83,7 +192,7 @@ func NewServer(jobRepo JobRepo, addr string) *Server {
 	}
 }
 
-func (s *Server) handleCron(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handlePostCron(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	defer r.Body.Close()
 	if err != nil {
@@ -98,14 +207,37 @@ func (s *Server) handleCron(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// TODO turn into middleware
+	if err = job.Validate(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	s.JobRepo.CreateJob(&job)
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Success"))
 }
 
+func (s *Server) handleGetCrons(w http.ResponseWriter, r *http.Request) {
+	jobs, err := s.JobRepo.GetJobs()
+	if err != nil {
+		http.Error(w, "Error getting jobs", http.StatusInternalServerError)
+		return
+	}
+
+	j, err := json.Marshal(jobs)
+	if err != nil {
+		http.Error(w, "Error sending jobs", http.StatusInternalServerError)
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write(j)
+}
+
 func (s *Server) NewCronMux() *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /cron", s.handleCron)
+	mux.HandleFunc("POST /cron", s.handlePostCron)
+	mux.HandleFunc("GET /cron", s.handleGetCrons)
 
 	return mux
 }
@@ -114,7 +246,7 @@ func (s *Server) Start() error {
 	mux := http.NewServeMux()
 	cronMux := s.NewCronMux()
 
-	mux.Handle("/v1/api/", http.StripPrefix("/v1/api", cronMux))
+	mux.Handle("/api/v1/", http.StripPrefix("/api/v1", cronMux))
 
 	return http.ListenAndServe(s.Addr, mux)
 }
@@ -192,14 +324,14 @@ func (s *InMemoryScheduleRepo) ScheduleJob(job *Job) error {
 		return (err)
 	}
 
-	runAt := schedule.Next(time.Now()) // next run time after current time
+	runAt := schedule.Next(time.Now().UTC()) // next run time after current time
 	s.store[job.Id] = &ScheduleDBEntry{job, runAt}
 
 	return nil
 }
 
 func (s *InMemoryScheduleRepo) GetJobsDueBefore(timeString string) ([]*Job, error) {
-	t, err := time.Parse("2006-01-02T15:04:05.000Z", timeString)
+	t, err := time.Parse(APPENV.TimeFormat, timeString)
 	if err != nil {
 		// TODO handle this error
 		return nil, err
@@ -207,22 +339,12 @@ func (s *InMemoryScheduleRepo) GetJobsDueBefore(timeString string) ([]*Job, erro
 
 	var res []*Job
 	for _, j := range s.store {
-		log.Println(j.runAt.String(), timeString)
-		if j.runAt.Before(t) {
+		if j.runAt.UTC().Before(t.UTC()) {
 			res = append(res, j.Job)
 		}
 	}
 
 	return res, nil
-}
-
-func NewSqliteDb() *sql.DB {
-	db, err := sql.Open("sqlite3", APPENV.SqlitePath)
-	if err != nil {
-		panic(err)
-	}
-
-	return db
 }
 
 type Executor struct {
@@ -243,14 +365,13 @@ func (e *Executor) Start() {
 	for {
 		select {
 		case <-ticker.C:
-			log.Println("Polling")
 			e.Poll()
 		}
 	}
 }
 
 func (e *Executor) Poll() {
-	t := time.Now().Format(APPENV.TimeFormat)
+	t := time.Now().UTC().Format(APPENV.TimeFormat)
 
 	jobs, err := e.scheduleRepo.GetJobsDueBefore(t)
 	if err != nil {
@@ -266,7 +387,36 @@ func (e *Executor) Poll() {
 }
 
 func (e *Executor) Worker(job *Job) {
-	log.Printf("Doing job %s with id %d", job.Name, job.Id)
+	log.Printf("Doing %s job %s with id %d retry limit %d", JobTypeToString(job.Type), job.Name, job.Id, job.RetryLimit)
+	var err error
+
+	runner, err := GetRunner(job.Type)
+	if err != nil {
+		// TODO handle this error
+		panic(err)
+	}
+
+	for i := range job.RetryLimit {
+		err = runner(job)
+		if err != nil {
+			log.Printf("Job with Id %d failed on attempt %d", job.Id, i)
+			continue
+		}
+		break
+	}
+
+	if err == nil {
+		log.Printf("Job with Id %d succeeded", job.Id)
+	}
+}
+
+func NewSqliteDb() *sql.DB {
+	db, err := sql.Open("sqlite3", APPENV.SqlitePath)
+	if err != nil {
+		panic(err)
+	}
+
+	return db
 }
 
 func main() {
@@ -280,8 +430,8 @@ func main() {
 	executor := NewExecutor(time.Duration(time.Second), scheduleRepo)
 	go executor.Start()
 
-	queService.Enqueue(NewJob("Say Hello", "* * * * * *"))
-	queService.Enqueue(NewJob("Say Goodbye", "* * * * * *"))
+	queService.Enqueue(NewJob("Say Hello", "* * * * * *", 3, TypeEmail))
+	queService.Enqueue(NewJob("Say Goodbye", "* * * * * *", 3, TypeDiscord))
 
 	server := NewServer(jobRepo, ":8080")
 
