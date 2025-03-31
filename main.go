@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -39,7 +40,6 @@ const (
 )
 
 func (t JobType) Valid() bool {
-	log.Println(JobTypeToString(t))
 	return TypeStart < t && t < TypeEnd
 }
 
@@ -347,6 +347,32 @@ func (s *InMemoryScheduleRepo) GetJobsDueBefore(timeString string) ([]*Job, erro
 	return res, nil
 }
 
+type SqliteScheduleRepo struct {
+	store *sql.DB
+}
+
+func NewSqliteScheduleRepo(db *sql.DB) *SqliteScheduleRepo {
+	return &SqliteScheduleRepo{
+		store: db,
+	}
+}
+
+func (s *SqliteScheduleRepo) ScheduleJob(job *Job) error {
+	schedule, err := cron.Parse(job.Cron)
+	if err != nil {
+		return (err)
+	}
+
+	runAt := schedule.Next(time.Now().UTC()) // next run time after current time
+	query := fmt.Sprintf("INSERT INTO scheduling (id, run_at) VALUES (%d, %s)", job.Id, runAt)
+	_, err = s.store.Exec(query)
+	if err != nil {
+		return errors.New("Error inserting into table")
+	}
+
+	return nil
+}
+
 type Executor struct {
 	Tick         time.Duration
 	scheduleRepo ScheduleRepo
@@ -432,6 +458,7 @@ func main() {
 
 	queService.Enqueue(NewJob("Say Hello", "* * * * * *", 3, TypeEmail))
 	queService.Enqueue(NewJob("Say Goodbye", "* * * * * *", 3, TypeDiscord))
+	queService.Enqueue(NewJob("Fail", "* * * * * *", 3, TypeCustom))
 
 	server := NewServer(jobRepo, ":8080")
 
