@@ -8,9 +8,10 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
-	// _ "github.com/mattn/go-sqlite3"
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/robfig/cron"
 )
 
@@ -62,6 +63,8 @@ type JobRunner func(job *Job) error
 
 func GetRunner(t JobType) (JobRunner, error) {
 	switch t {
+	case TypeCustom:
+		return CustomRunner, nil
 	case TypeEmail:
 		return EmailRunner, nil
 	case TypeDiscord:
@@ -71,6 +74,10 @@ func GetRunner(t JobType) (JobRunner, error) {
 	}
 
 	return nil, ERROR_JOB_RUNNER_NOT_FOUND
+}
+
+func CustomRunner(job *Job) error {
+	return nil
 }
 
 func EmailRunner(job *Job) error {
@@ -95,11 +102,12 @@ var (
 	ERROR_INVALID_JOB_TYPE      = errors.New("Error invalid job type")
 	ERROR_JOB_NAME_NOT_PROVIDED = errors.New("Error job name not provided")
 	ERROR_JOB_RUNNER_NOT_FOUND  = errors.New("Error associated job runner not found")
+	ERROR_JOB_FAILED            = errors.New("Error job failed")
 )
 
 var APPENV = Env{
 	SqlitePath: "./scheduling.db",
-	TimeFormat: "2006-01-02T15:04:05.000Z",
+	TimeFormat: time.RFC3339,
 }
 
 type JobRepo interface {
@@ -112,7 +120,7 @@ type CDCQueue interface {
 }
 
 type Job struct {
-	Id         int     `josn:"id"`
+	Id         int     `json:"id"`
 	Name       string  `json:"name"`
 	Cron       string  `json:"cron"`
 	RetryLimit int     `json:"retry_limit"`
@@ -148,6 +156,7 @@ type DBWithCDC struct {
 	idInc   int
 	store   map[int]*Job
 	cdcChan chan *Job
+	mu      sync.Mutex
 }
 
 func NewDBWithCDC() *DBWithCDC {
@@ -155,10 +164,13 @@ func NewDBWithCDC() *DBWithCDC {
 		idInc:   0,
 		store:   make(map[int]*Job),
 		cdcChan: make(chan *Job),
+		mu:      sync.Mutex{},
 	}
 }
 
 func (db *DBWithCDC) CreateJob(job *Job) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
 	job.Id = db.idInc
 	db.idInc += 1
 
@@ -347,30 +359,118 @@ func (s *InMemoryScheduleRepo) GetJobsDueBefore(timeString string) ([]*Job, erro
 	return res, nil
 }
 
+// CreateJob(job *Job) error
+// GetJobs() ([]*Job, error)
+type SqliteJobRepo struct {
+	store   *sql.DB
+	mu      sync.Mutex
+	cdcChan chan *Job
+}
+
+func NewSqliteJobRepo(db *sql.DB) *SqliteJobRepo {
+	return &SqliteJobRepo{
+		store:   db,
+		mu:      sync.Mutex{},
+		cdcChan: make(chan *Job),
+	}
+}
+
+func (s *SqliteJobRepo) CreateJob(job *Job) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	query := "INSERT INTO jobs (name, cron, retry_limit, type) VALUES (?, ?, ?, ?)"
+	result, err := s.store.Exec(query, job.Name, job.Cron, job.RetryLimit, job.Type)
+	if err != nil {
+		return err
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return err
+	}
+
+	job.Id = int(id)
+	// s.cdcChan <- job
+
+	return nil
+}
+
+func (s *SqliteJobRepo) GetJobs() ([]*Job, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rows, err := s.store.Query("SELECT * FROM jobs")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	jobs := []*Job{}
+	for rows.Next() {
+		var job Job
+		if err := rows.Scan(&job.Id, &job.Name, &job.Cron, &job.RetryLimit, &job.Type); err != nil {
+			// TODO handle this error
+			panic(err)
+		}
+		jobs = append(jobs, &job)
+	}
+
+	return jobs, nil
+}
+
 type SqliteScheduleRepo struct {
 	store *sql.DB
+	mu    sync.Mutex
 }
 
 func NewSqliteScheduleRepo(db *sql.DB) *SqliteScheduleRepo {
 	return &SqliteScheduleRepo{
 		store: db,
+		mu:    sync.Mutex{},
 	}
 }
 
 func (s *SqliteScheduleRepo) ScheduleJob(job *Job) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	schedule, err := cron.Parse(job.Cron)
 	if err != nil {
 		return (err)
 	}
 
 	runAt := schedule.Next(time.Now().UTC()) // next run time after current time
-	query := fmt.Sprintf("INSERT INTO scheduling (id, run_at) VALUES (%d, %s)", job.Id, runAt)
+	query := fmt.Sprintf("INSERT INTO scheduling (job_id, run_at) VALUES (%d, %s)", job.Id, runAt)
 	_, err = s.store.Exec(query)
 	if err != nil {
 		return errors.New("Error inserting into table")
 	}
 
 	return nil
+}
+
+func (s *SqliteScheduleRepo) GetJobsDueBefore(timeString string) ([]*Job, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	query := fmt.Sprintf("SELECT (job_id, run_at) FROM scheduling WHERE run_at > %s", timeString)
+	rows, err := s.store.Query(query)
+	if err != nil {
+		panic(err)
+	}
+	defer rows.Close()
+
+	jobs := []*Job{}
+	for rows.Next() {
+		var job Job
+		if err := rows.Scan(&job.Id); err != nil {
+			// TODO handle this error
+			panic(err)
+		}
+		jobs = append(jobs, &job)
+	}
+
+	return jobs, nil
 }
 
 type Executor struct {
@@ -436,6 +536,7 @@ func (e *Executor) Worker(job *Job) {
 	}
 }
 
+// TODO split this into seperate read and write groups for better concurrent access
 func NewSqliteDb() *sql.DB {
 	db, err := sql.Open("sqlite3", APPENV.SqlitePath)
 	if err != nil {
@@ -446,21 +547,26 @@ func NewSqliteDb() *sql.DB {
 }
 
 func main() {
-	jobRepo := NewDBWithCDC()
+	sqlite3db := NewSqliteDb()
+
+	jobRepo := NewSqliteJobRepo(sqlite3db)
 	queService := NewQueService(jobRepo)
 
-	scheduleRepo := NewInMemoryScheduleRepo()
-	scheduler := NewScheduler(jobRepo, scheduleRepo)
-	go scheduler.Start()
+	// scheduleRepo := NewSqliteScheduleRepo(NewSqliteDb())
+	// scheduler := NewScheduler(jobRepo, scheduleRepo)
+	// go scheduler.Start()
 
-	executor := NewExecutor(time.Duration(time.Second), scheduleRepo)
-	go executor.Start()
-
-	queService.Enqueue(NewJob("Say Hello", "* * * * * *", 3, TypeEmail))
+	// executor := NewExecutor(time.Duration(time.Second), scheduleRepo)
+	//  go executor.Start()
+	job := NewJob("Say Hello", "* * * * * *", 3, TypeEmail)
+	log.Println(job)
+	if err := queService.Enqueue(job); err != nil {
+		panic(err)
+	}
 	queService.Enqueue(NewJob("Say Goodbye", "* * * * * *", 3, TypeDiscord))
 	queService.Enqueue(NewJob("Fail", "* * * * * *", 3, TypeCustom))
 
-	server := NewServer(jobRepo, ":8080")
+	// server := NewServer(jobRepo, ":8080")
 
-	log.Println(server.Start())
+	// log.Println(server.Start())
 }
