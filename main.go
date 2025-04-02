@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -107,7 +106,7 @@ var (
 
 var APPENV = Env{
 	SqlitePath: "./scheduling.db",
-	TimeFormat: time.RFC3339,
+	TimeFormat: "2006-01-02 15:04:05",
 }
 
 type JobRepo interface {
@@ -391,7 +390,7 @@ func (s *SqliteJobRepo) CreateJob(job *Job) error {
 	}
 
 	job.Id = int(id)
-	// s.cdcChan <- job
+	s.cdcChan <- job
 
 	return nil
 }
@@ -419,6 +418,10 @@ func (s *SqliteJobRepo) GetJobs() ([]*Job, error) {
 	return jobs, nil
 }
 
+func (s *SqliteJobRepo) Listen() *Job {
+	return <-s.cdcChan
+}
+
 type SqliteScheduleRepo struct {
 	store *sql.DB
 	mu    sync.Mutex
@@ -439,9 +442,9 @@ func (s *SqliteScheduleRepo) ScheduleJob(job *Job) error {
 		return (err)
 	}
 
-	runAt := schedule.Next(time.Now().UTC()) // next run time after current time
-	query := fmt.Sprintf("INSERT INTO scheduling (job_id, run_at) VALUES (%d, %s)", job.Id, runAt)
-	_, err = s.store.Exec(query)
+	runAt := schedule.Next(time.Now().UTC()).Format(APPENV.TimeFormat) // next run time after current time
+	query := "INSERT INTO scheduling (job_id, run_at) VALUES (?, ?)"
+	_, err = s.store.Exec(query, job.Id, runAt)
 	if err != nil {
 		return errors.New("Error inserting into table")
 	}
@@ -453,8 +456,11 @@ func (s *SqliteScheduleRepo) GetJobsDueBefore(timeString string) ([]*Job, error)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	query := fmt.Sprintf("SELECT (job_id, run_at) FROM scheduling WHERE run_at > %s", timeString)
-	rows, err := s.store.Query(query)
+	log.Println(timeString)
+
+	// TODO WRITE THE JOIN METHODS
+	query := "SELECT job_id FROM scheduling WHERE run_at < ?"
+	rows, err := s.store.Query(query, timeString)
 	if err != nil {
 		panic(err)
 	}
@@ -519,6 +525,7 @@ func (e *Executor) Worker(job *Job) {
 	runner, err := GetRunner(job.Type)
 	if err != nil {
 		// TODO handle this error
+		log.Printf("Type that caused panic %d, name %s", job.Type, job.Name)
 		panic(err)
 	}
 
@@ -552,21 +559,22 @@ func main() {
 	jobRepo := NewSqliteJobRepo(sqlite3db)
 	queService := NewQueService(jobRepo)
 
-	// scheduleRepo := NewSqliteScheduleRepo(NewSqliteDb())
-	// scheduler := NewScheduler(jobRepo, scheduleRepo)
-	// go scheduler.Start()
+	scheduleRepo := NewSqliteScheduleRepo(sqlite3db)
+	scheduler := NewScheduler(jobRepo, scheduleRepo)
+	go scheduler.Start()
 
-	// executor := NewExecutor(time.Duration(time.Second), scheduleRepo)
-	//  go executor.Start()
-	job := NewJob("Say Hello", "* * * * * *", 3, TypeEmail)
-	log.Println(job)
-	if err := queService.Enqueue(job); err != nil {
+	executor := NewExecutor(time.Duration(time.Second), scheduleRepo)
+	go executor.Start()
+
+	if err := queService.Enqueue(NewJob("Say Hello", "* * * * * *", 3, TypeEmail)); err != nil {
 		panic(err)
 	}
-	queService.Enqueue(NewJob("Say Goodbye", "* * * * * *", 3, TypeDiscord))
-	queService.Enqueue(NewJob("Fail", "* * * * * *", 3, TypeCustom))
 
-	// server := NewServer(jobRepo, ":8080")
+	if err := queService.Enqueue(NewJob("Say Goodbye", "* * * * * *", 3, TypeDiscord)); err != nil {
+		panic(err)
+	}
 
-	// log.Println(server.Start())
+	server := NewServer(jobRepo, ":8080")
+
+	log.Println(server.Start())
 }
