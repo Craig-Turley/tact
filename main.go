@@ -245,10 +245,16 @@ func (s *Server) handleGetCrons(w http.ResponseWriter, r *http.Request) {
 	w.Write(j)
 }
 
+func (s *Server) healthCheck(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Alive"))
+}
+
 func (s *Server) NewCronMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /cron", s.handlePostCron)
 	mux.HandleFunc("GET /cron", s.handleGetCrons)
+	mux.HandleFunc("GET /health_check", s.healthCheck)
 
 	return mux
 }
@@ -311,52 +317,57 @@ func (s *Scheduler) Schedule(job *Job) {
 
 type ScheduleDBEntry struct {
 	*Job
-	runAt time.Time
+	EventId int
 }
 
 type ScheduleRepo interface {
+	// pass just the job the scheduler will take care of finding its next occurence
 	ScheduleJob(job *Job) error
-	GetJobsDueBefore(timeString string) ([]*Job, error)
+	// pass a UTC time string in ISO-8601 format
+	// this returns an entry with the event id and the job
+	GetJobsDueBefore(timeString string) ([]*ScheduleDBEntry, error)
+	// id is the id of the event not the job itself (this table holds past jobs)
+	UpdateJobStatus(id int, status Status) error
 }
 
-type InMemoryScheduleRepo struct {
-	store map[int]*ScheduleDBEntry
-}
-
-func NewInMemoryScheduleRepo() *InMemoryScheduleRepo {
-	return &InMemoryScheduleRepo{
-		store: make(map[int]*ScheduleDBEntry),
-	}
-}
-
-func (s *InMemoryScheduleRepo) ScheduleJob(job *Job) error {
-	schedule, err := cron.Parse(job.Cron)
-	if err != nil {
-		return (err)
-	}
-
-	runAt := schedule.Next(time.Now().UTC()) // next run time after current time
-	s.store[job.Id] = &ScheduleDBEntry{job, runAt}
-
-	return nil
-}
-
-func (s *InMemoryScheduleRepo) GetJobsDueBefore(timeString string) ([]*Job, error) {
-	t, err := time.Parse(APPENV.TimeFormat, timeString)
-	if err != nil {
-		// TODO handle this error
-		return nil, err
-	}
-
-	var res []*Job
-	for _, j := range s.store {
-		if j.runAt.UTC().Before(t.UTC()) {
-			res = append(res, j.Job)
-		}
-	}
-
-	return res, nil
-}
+// type InMemoryScheduleRepo struct {
+// 	store map[int]*ScheduleDBEntry
+// }
+//
+// func NewInMemoryScheduleRepo() *InMemoryScheduleRepo {
+// 	return &InMemoryScheduleRepo{
+// 		store: make(map[int]*ScheduleDBEntry),
+// 	}
+// }
+//
+// func (s *InMemoryScheduleRepo) ScheduleJob(job *Job) error {
+// 	schedule, err := cron.Parse(job.Cron)
+// 	if err != nil {
+// 		return (err)
+// 	}
+//
+// 	runAt := schedule.Next(time.Now().UTC()) // next run time after current time
+// 	s.store[job.Id] = &ScheduleDBEntry{job, runAt}
+//
+// 	return nil
+// }
+//
+// func (s *InMemoryScheduleRepo) GetJobsDueBefore(timeString string) ([]*Job, error) {
+// 	t, err := time.Parse(APPENV.TimeFormat, timeString)
+// 	if err != nil {
+// 		// TODO handle this error
+// 		return nil, err
+// 	}
+//
+// 	var res []*Job
+// 	for _, j := range s.store {
+// 		if j.runAt.UTC().Before(t.UTC()) {
+// 			res = append(res, j.Job)
+// 		}
+// 	}
+//
+// 	return res, nil
+// }
 
 // CreateJob(job *Job) error
 // GetJobs() ([]*Job, error)
@@ -443,8 +454,8 @@ func (s *SqliteScheduleRepo) ScheduleJob(job *Job) error {
 	}
 
 	runAt := schedule.Next(time.Now().UTC()).Format(APPENV.TimeFormat) // next run time after current time
-	query := "INSERT INTO scheduling (job_id, run_at) VALUES (?, ?)"
-	_, err = s.store.Exec(query, job.Id, runAt)
+	query := "INSERT INTO scheduling (job_id, run_at, status) VALUES (?, ?, ?)"
+	_, err = s.store.Exec(query, job.Id, runAt, StatusScheduled)
 	if err != nil {
 		return errors.New("Error inserting into table")
 	}
@@ -452,31 +463,54 @@ func (s *SqliteScheduleRepo) ScheduleJob(job *Job) error {
 	return nil
 }
 
-func (s *SqliteScheduleRepo) GetJobsDueBefore(timeString string) ([]*Job, error) {
+func (s *SqliteScheduleRepo) GetJobsDueBefore(timeString string) ([]*ScheduleDBEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	log.Println(timeString)
-
 	// TODO WRITE THE JOIN METHODS
-	query := "SELECT job_id FROM scheduling WHERE run_at < ?"
-	rows, err := s.store.Query(query, timeString)
+	query := "SELECT j.*, s.id FROM jobs j JOIN scheduling s ON s.job_id=j.id WHERE s.run_at < ? AND s.status = ?"
+	rows, err := s.store.Query(query, timeString, StatusScheduled)
 	if err != nil {
 		panic(err)
 	}
 	defer rows.Close()
 
-	jobs := []*Job{}
+	entries := []*ScheduleDBEntry{}
 	for rows.Next() {
-		var job Job
-		if err := rows.Scan(&job.Id); err != nil {
+		var entry ScheduleDBEntry
+		if err := rows.Scan(&entry.Id, &entry.Name, &entry.Cron, &entry.RetryLimit, &entry.Type, &entry.EventId); err != nil {
 			// TODO handle this error
 			panic(err)
 		}
-		jobs = append(jobs, &job)
+		entries = append(entries, &entry)
 	}
 
-	return jobs, nil
+	return entries, nil
+}
+
+func (s *SqliteScheduleRepo) UpdateJobStatus(id int, status Status) error {
+	tx, err := s.store.Begin()
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	query := "UPDATE scheduling SET status = ? WHERE id = ?"
+	stmt, err := tx.Prepare(query)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+
+	_, err = stmt.Exec(id, status)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	tx.Commit()
+	return nil
 }
 
 type Executor struct {
@@ -505,41 +539,45 @@ func (e *Executor) Start() {
 func (e *Executor) Poll() {
 	t := time.Now().UTC().Format(APPENV.TimeFormat)
 
-	jobs, err := e.scheduleRepo.GetJobsDueBefore(t)
+	events, err := e.scheduleRepo.GetJobsDueBefore(t)
 	if err != nil {
 		// TODO handle this error
 		panic(err)
 	}
 
-	log.Printf("%d jobs found before %s", len(jobs), t)
+	log.Printf("%d events found before %s", len(events), t)
 
-	for _, job := range jobs {
-		go e.Worker(job)
+	for _, event := range events {
+		go e.Worker(event)
 	}
 }
 
-func (e *Executor) Worker(job *Job) {
-	log.Printf("Doing %s job %s with id %d retry limit %d", JobTypeToString(job.Type), job.Name, job.Id, job.RetryLimit)
+func (e *Executor) Worker(entry *ScheduleDBEntry) {
+	log.Printf("Doing %s entry %s with id %d retry limit %d", JobTypeToString(entry.Type), entry.Name, entry.Id, entry.RetryLimit)
 	var err error
 
-	runner, err := GetRunner(job.Type)
+	runner, err := GetRunner(entry.Type)
 	if err != nil {
 		// TODO handle this error
-		log.Printf("Type that caused panic %d, name %s", job.Type, job.Name)
+		log.Printf("Type that caused panic %d, name %s", entry.Type, entry.Name)
 		panic(err)
 	}
 
-	for i := range job.RetryLimit {
-		err = runner(job)
+	for i := range entry.RetryLimit {
+		err = runner(entry.Job)
 		if err != nil {
-			log.Printf("Job with Id %d failed on attempt %d", job.Id, i)
+			log.Printf("Job with Id %d failed on attempt %d", entry.Id, i)
 			continue
 		}
 		break
 	}
 
-	if err == nil {
-		log.Printf("Job with Id %d succeeded", job.Id)
+	if err != nil {
+		// TODO HANDLE THE ERROR RETURNED HERE
+		e.scheduleRepo.UpdateJobStatus(entry.Id, StatusFailed)
+	} else {
+		// TODO HANDLE THE ERROR RETURNED HERE
+		e.scheduleRepo.UpdateJobStatus(entry.Id, StatusSuccess)
 	}
 }
 
@@ -557,7 +595,7 @@ func main() {
 	sqlite3db := NewSqliteDb()
 
 	jobRepo := NewSqliteJobRepo(sqlite3db)
-	queService := NewQueService(jobRepo)
+	// queService := NewQueService(jobRepo)
 
 	scheduleRepo := NewSqliteScheduleRepo(sqlite3db)
 	scheduler := NewScheduler(jobRepo, scheduleRepo)
@@ -566,13 +604,13 @@ func main() {
 	executor := NewExecutor(time.Duration(time.Second), scheduleRepo)
 	go executor.Start()
 
-	if err := queService.Enqueue(NewJob("Say Hello", "* * * * * *", 3, TypeEmail)); err != nil {
-		panic(err)
-	}
-
-	if err := queService.Enqueue(NewJob("Say Goodbye", "* * * * * *", 3, TypeDiscord)); err != nil {
-		panic(err)
-	}
+	// if err := queService.Enqueue(NewJob("Say Hello", "* * * * * *", 3, TypeEmail)); err != nil {
+	// 	panic(err)
+	// }
+	//
+	// if err := queService.Enqueue(NewJob("Say Goodbye", "* * * * * *", 3, TypeDiscord)); err != nil {
+	// 	panic(err)
+	// }
 
 	server := NewServer(jobRepo, ":8080")
 
