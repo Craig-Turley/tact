@@ -94,6 +94,7 @@ func SlackRunner(job *Job) error {
 type Env struct {
 	SqlitePath string
 	TimeFormat string
+	Duration   time.Duration
 }
 
 var (
@@ -107,6 +108,7 @@ var (
 var APPENV = Env{
 	SqlitePath: "./scheduling.db",
 	TimeFormat: "2006-01-02 15:04:05",
+	Duration:   time.Duration(time.Second),
 }
 
 type JobRepo interface {
@@ -151,45 +153,46 @@ func (j *Job) Validate() error {
 	return nil
 }
 
-type DBWithCDC struct {
-	idInc   int
-	store   map[int]*Job
-	cdcChan chan *Job
-	mu      sync.Mutex
-}
-
-func NewDBWithCDC() *DBWithCDC {
-	return &DBWithCDC{
-		idInc:   0,
-		store:   make(map[int]*Job),
-		cdcChan: make(chan *Job),
-		mu:      sync.Mutex{},
-	}
-}
-
-func (db *DBWithCDC) CreateJob(job *Job) error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-	job.Id = db.idInc
-	db.idInc += 1
-
-	db.store[job.Id] = job
-	db.cdcChan <- job
-
-	return nil
-}
-
-func (db *DBWithCDC) GetJobs() ([]*Job, error) {
-	res := make([]*Job, 0, len(db.store))
-	for _, job := range db.store {
-		res = append(res, job)
-	}
-	return res, nil
-}
-
-func (db *DBWithCDC) Listen() *Job {
-	return <-db.cdcChan
-}
+// in memory for testing
+// type DBWithCDC struct {
+// 	idInc   int
+// 	store   map[int]*Job
+// 	cdcChan chan *Job
+// 	mu      sync.Mutex
+// }
+//
+// func NewDBWithCDC() *DBWithCDC {
+// 	return &DBWithCDC{
+// 		idInc:   0,
+// 		store:   make(map[int]*Job),
+// 		cdcChan: make(chan *Job),
+// 		mu:      sync.Mutex{},
+// 	}
+// }
+//
+// func (db *DBWithCDC) CreateJob(job *Job) error {
+// 	db.mu.Lock()
+// 	defer db.mu.Unlock()
+// 	job.Id = db.idInc
+// 	db.idInc += 1
+//
+// 	db.store[job.Id] = job
+// 	db.cdcChan <- job
+//
+// 	return nil
+// }
+//
+// func (db *DBWithCDC) GetJobs() ([]*Job, error) {
+// 	res := make([]*Job, 0, len(db.store))
+// 	for _, job := range db.store {
+// 		res = append(res, job)
+// 	}
+// 	return res, nil
+// }
+//
+// func (db *DBWithCDC) Listen() *Job {
+// 	return <-db.cdcChan
+// }
 
 type Server struct {
 	JobRepo JobRepo
@@ -218,7 +221,6 @@ func (s *Server) handlePostCron(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO turn into middleware
 	if err = job.Validate(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -268,24 +270,6 @@ func (s *Server) Start() error {
 	return http.ListenAndServe(s.Addr, mux)
 }
 
-type QueService struct {
-	JobRepo JobRepo
-}
-
-func NewQueService(jobRepo JobRepo) *QueService {
-	return &QueService{
-		JobRepo: jobRepo,
-	}
-}
-
-func (q *QueService) Enqueue(job *Job) error {
-	if err := q.JobRepo.CreateJob(job); err != nil {
-		return err
-	}
-
-	return nil
-}
-
 type Scheduler struct {
 	cdcQueue     CDCQueue
 	scheduleRepo ScheduleRepo
@@ -308,16 +292,18 @@ func (s *Scheduler) Start() {
 	}
 }
 
-func (s *Scheduler) Schedule(job *Job) {
-	// TODO handler error
-	if err := s.scheduleRepo.ScheduleJob(job); err != nil {
-		panic(err)
-	}
-}
+// probably dont need this
+// func (s *Scheduler) Schedule(job *Job) {
+// 	log.Println("hello")
+// 	// TODO handler error
+// 	if err := s.scheduleRepo.ScheduleJob(job); err != nil {
+// 		panic(err)
+// 	}
+// }
 
 type ScheduleDBEntry struct {
-	*Job
-	EventId int
+	Job
+	ScheduleId int
 }
 
 type ScheduleRepo interface {
@@ -420,8 +406,7 @@ func (s *SqliteJobRepo) GetJobs() ([]*Job, error) {
 	for rows.Next() {
 		var job Job
 		if err := rows.Scan(&job.Id, &job.Name, &job.Cron, &job.RetryLimit, &job.Type); err != nil {
-			// TODO handle this error
-			panic(err)
+			return nil, err
 		}
 		jobs = append(jobs, &job)
 	}
@@ -467,20 +452,18 @@ func (s *SqliteScheduleRepo) GetJobsDueBefore(timeString string) ([]*ScheduleDBE
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// TODO WRITE THE JOIN METHODS
-	query := "SELECT j.*, s.id FROM jobs j JOIN scheduling s ON s.job_id=j.id WHERE s.run_at < ? AND s.status = ?"
+	query := "SELECT j.*, s.id AS schedule_id FROM jobs j JOIN scheduling s ON s.job_id=j.id WHERE s.run_at < ? AND s.status = ?"
 	rows, err := s.store.Query(query, timeString, StatusScheduled)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 	defer rows.Close()
 
 	entries := []*ScheduleDBEntry{}
 	for rows.Next() {
 		var entry ScheduleDBEntry
-		if err := rows.Scan(&entry.Id, &entry.Name, &entry.Cron, &entry.RetryLimit, &entry.Type, &entry.EventId); err != nil {
-			// TODO handle this error
-			panic(err)
+		if err := rows.Scan(&entry.Id, &entry.Name, &entry.Cron, &entry.RetryLimit, &entry.Type, &entry.ScheduleId); err != nil {
+			return nil, err
 		}
 		entries = append(entries, &entry)
 	}
@@ -541,8 +524,10 @@ func (e *Executor) Poll() {
 
 	events, err := e.scheduleRepo.GetJobsDueBefore(t)
 	if err != nil {
-		// TODO handle this error
-		panic(err)
+		// TODO properly log this
+		// maybe consider fail threshold and if it passes than send an alert
+		log.Println(err)
+		return
 	}
 
 	log.Printf("%d events found before %s", len(events), t)
@@ -554,17 +539,15 @@ func (e *Executor) Poll() {
 
 func (e *Executor) Worker(entry *ScheduleDBEntry) {
 	log.Printf("Doing %s entry %s with id %d retry limit %d", JobTypeToString(entry.Type), entry.Name, entry.Id, entry.RetryLimit)
-	var err error
 
 	runner, err := GetRunner(entry.Type)
 	if err != nil {
 		// TODO handle this error
-		log.Printf("Type that caused panic %d, name %s", entry.Type, entry.Name)
-		panic(err)
+		log.Printf("Failed to fetch runner for job type %s", JobTypeToString(entry.Type))
 	}
 
 	for i := range entry.RetryLimit {
-		err = runner(entry.Job)
+		err = runner(&entry.Job)
 		if err != nil {
 			log.Printf("Job with Id %d failed on attempt %d", entry.Id, i)
 			continue
@@ -574,10 +557,14 @@ func (e *Executor) Worker(entry *ScheduleDBEntry) {
 
 	if err != nil {
 		// TODO HANDLE THE ERROR RETURNED HERE
-		e.scheduleRepo.UpdateJobStatus(entry.Id, StatusFailed)
+		if err = e.scheduleRepo.UpdateJobStatus(entry.Id, StatusFailed); err != nil {
+			// TODO configure db down alerts
+		}
 	} else {
 		// TODO HANDLE THE ERROR RETURNED HERE
-		e.scheduleRepo.UpdateJobStatus(entry.Id, StatusSuccess)
+		if err = e.scheduleRepo.UpdateJobStatus(entry.Id, StatusSuccess); err != nil {
+			// TODO configure db down alerts
+		}
 	}
 }
 
@@ -595,22 +582,13 @@ func main() {
 	sqlite3db := NewSqliteDb()
 
 	jobRepo := NewSqliteJobRepo(sqlite3db)
-	// queService := NewQueService(jobRepo)
-
 	scheduleRepo := NewSqliteScheduleRepo(sqlite3db)
+
 	scheduler := NewScheduler(jobRepo, scheduleRepo)
 	go scheduler.Start()
 
-	executor := NewExecutor(time.Duration(time.Second), scheduleRepo)
+	executor := NewExecutor(APPENV.Duration, scheduleRepo)
 	go executor.Start()
-
-	// if err := queService.Enqueue(NewJob("Say Hello", "* * * * * *", 3, TypeEmail)); err != nil {
-	// 	panic(err)
-	// }
-	//
-	// if err := queService.Enqueue(NewJob("Say Goodbye", "* * * * * *", 3, TypeDiscord)); err != nil {
-	// 	panic(err)
-	// }
 
 	server := NewServer(jobRepo, ":8080")
 
