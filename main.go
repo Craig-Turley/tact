@@ -4,9 +4,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"regexp"
 	"sync"
 	"time"
 
@@ -58,37 +61,66 @@ func JobTypeToString(t JobType) string {
 	return "not found"
 }
 
-type JobRunner func(job *Job) error
+type EmailRepo interface {
+	// Given job id (primary key of job table / job.Id), returns
+	// the email list associated with the given
+	GetEmailList(jobId int) ([]string, error)
+	// Given scheduleId returns the associated template of the
+	// given schedule id
+	GetTemplate(scheduleId int) (string, error)
+}
 
-func GetRunner(t JobType) (JobRunner, error) {
-	switch t {
-	case TypeCustom:
-		return CustomRunner, nil
-	case TypeEmail:
-		return EmailRunner, nil
-	case TypeDiscord:
-		return DiscordRunner, nil
-	case TypeSlack:
-		return SlackRunner, nil
+type SqliteEmailRepo struct {
+	store *sql.DB
+	mu    sync.Mutex
+}
+
+func NewSqliteEmailRepo(db *sql.DB) *SqliteEmailRepo {
+	return &SqliteEmailRepo{
+		store: db,
+		mu:    sync.Mutex{},
+	}
+}
+
+func (s *SqliteEmailRepo) GetEmailList(jobId int) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rows, err := s.store.Query("SELECT email FROM email_list WHERE job_id=?", jobId)
+	if err != nil {
+		return []string{}, err
+	}
+	defer rows.Close()
+
+	emailList := []string{}
+	for rows.Next() {
+		var email string
+		if err := rows.Scan(&email); err != nil {
+			return nil, err
+		}
+		emailList = append(emailList, email)
 	}
 
-	return nil, ERROR_JOB_RUNNER_NOT_FOUND
+	return emailList, nil
 }
 
-func CustomRunner(job *Job) error {
-	return nil
-}
+func (s *SqliteEmailRepo) GetTemplate(scheduleId int) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-func EmailRunner(job *Job) error {
-	return nil
-}
+	row := s.store.QueryRow("SELECT path FROM email_template WHERE schedule_id=?", scheduleId)
 
-func DiscordRunner(job *Job) error {
-	return nil
-}
+	var path string
+	if err := row.Scan(&path); err != nil {
+		return "", err
+	}
 
-func SlackRunner(job *Job) error {
-	return nil
+	template, err := os.ReadFile("file.txt")
+	if err != nil {
+		return "", err
+	}
+
+	return string(template), nil
 }
 
 type Env struct {
@@ -98,12 +130,25 @@ type Env struct {
 }
 
 var (
-	ERROR_INVALID_RETRY_LIMIT   = errors.New("Error invalid retry limit")
-	ERROR_INVALID_JOB_TYPE      = errors.New("Error invalid job type")
-	ERROR_JOB_NAME_NOT_PROVIDED = errors.New("Error job name not provided")
-	ERROR_JOB_RUNNER_NOT_FOUND  = errors.New("Error associated job runner not found")
-	ERROR_JOB_FAILED            = errors.New("Error job failed")
+	ERROR_INVALID_RETRY_LIMIT   = "Error invalid retry limit"
+	ERROR_INVALID_JOB_TYPE      = "Error invalid job type"
+	ERROR_JOB_NAME_NOT_PROVIDED = "Error job name not provided"
+	ERROR_JOB_RUNNER_NOT_FOUND  = "Error associated job runner not found"
+	ERROR_JOB_TYPE_MISMATCH     = "Error runner and job type mismatch. Got %d expected %d"
+	ERROR_JOB_FAILED            = "Error job failed"
 )
+
+func NewError(template string, args ...any) error {
+	if countFormats(template) != len(args) {
+		return errors.New("Error: No information available - error generating message")
+	}
+	return errors.New(fmt.Sprintf(template, args...))
+}
+
+func countFormats(format string) int {
+	re := regexp.MustCompile(`%[dfsuXxobegt]`)
+	return len(re.FindAllString(format, -1))
+}
 
 var APPENV = Env{
 	SqlitePath: "./scheduling.db",
@@ -139,15 +184,15 @@ func NewJob(name, cron string, retryLimit int, jobType JobType) *Job {
 
 func (j *Job) Validate() error {
 	if len(j.Name) == 0 {
-		return ERROR_JOB_NAME_NOT_PROVIDED
+		return NewError(ERROR_JOB_NAME_NOT_PROVIDED)
 	}
 
 	if ok := j.Type.Valid(); !ok {
-		return ERROR_INVALID_JOB_TYPE
+		return NewError(ERROR_INVALID_JOB_TYPE)
 	}
 
 	if j.RetryLimit <= 0 {
-		return ERROR_INVALID_RETRY_LIMIT
+		return NewError(ERROR_INVALID_RETRY_LIMIT)
 	}
 
 	return nil
@@ -499,12 +544,14 @@ func (s *SqliteScheduleRepo) UpdateJobStatus(id int, status Status) error {
 type Executor struct {
 	Tick         time.Duration
 	scheduleRepo ScheduleRepo
+	emailRepo    EmailRepo
 }
 
-func NewExecutor(tick time.Duration, scheduleRepo ScheduleRepo) *Executor {
+func NewExecutor(tick time.Duration, db *sql.DB) *Executor {
 	return &Executor{
 		Tick:         tick,
-		scheduleRepo: scheduleRepo,
+		scheduleRepo: NewSqliteScheduleRepo(db),
+		emailRepo:    NewSqliteEmailRepo(db),
 	}
 }
 
@@ -540,7 +587,7 @@ func (e *Executor) Poll() {
 func (e *Executor) Worker(entry *ScheduleDBEntry) {
 	log.Printf("Doing %s entry %s with id %d retry limit %d", JobTypeToString(entry.Type), entry.Name, entry.Id, entry.RetryLimit)
 
-	runner, err := GetRunner(entry.Type)
+	runner, err := e.GetRunner(entry.Type)
 	if err != nil {
 		// TODO handle this error
 		log.Printf("Failed to fetch runner for job type %s", JobTypeToString(entry.Type))
@@ -568,6 +615,52 @@ func (e *Executor) Worker(entry *ScheduleDBEntry) {
 	}
 }
 
+type JobRunner func(job *Job) error
+
+func (e *Executor) GetRunner(t JobType) (JobRunner, error) {
+	switch t {
+	case TypeCustom:
+		return e.CustomRunner, nil
+	case TypeEmail:
+		return e.EmailRunner, nil
+	case TypeDiscord:
+		return e.DiscordRunner, nil
+	case TypeSlack:
+		return e.SlackRunner, nil
+	}
+
+	return nil, NewError(ERROR_JOB_RUNNER_NOT_FOUND)
+}
+
+func (e *Executor) CustomRunner(job *Job) error {
+	return nil
+}
+
+func (e *Executor) EmailRunner(job *Job) error {
+	if job.Type != TypeEmail {
+		return NewError(ERROR_JOB_TYPE_MISMATCH, job.Type, TypeEmail)
+	}
+
+	emailList, err := e.emailRepo.GetEmailList(job.Id)
+	if err != nil {
+		return err
+	}
+
+	for _, email := range emailList {
+		log.Printf("Sending email to %s", email)
+	}
+
+	return nil
+}
+
+func (e *Executor) DiscordRunner(job *Job) error {
+	return nil
+}
+
+func (e *Executor) SlackRunner(job *Job) error {
+	return nil
+}
+
 // TODO split this into seperate read and write groups for better concurrent access
 func NewSqliteDb() *sql.DB {
 	db, err := sql.Open("sqlite3", APPENV.SqlitePath)
@@ -587,7 +680,7 @@ func main() {
 	scheduler := NewScheduler(jobRepo, scheduleRepo)
 	go scheduler.Start()
 
-	executor := NewExecutor(APPENV.Duration, scheduleRepo)
+	executor := NewExecutor(APPENV.Duration, sqlite3db)
 	go executor.Start()
 
 	server := NewServer(jobRepo, ":8080")
