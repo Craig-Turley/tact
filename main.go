@@ -82,28 +82,25 @@ func NewSqliteEmailRepo(db *sql.DB) *SqliteEmailRepo {
 	}
 }
 
+// TODO fix this
 func (s *SqliteEmailRepo) GetEmailList(jobId int) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	rows, err := s.store.Query("SELECT email FROM email_list WHERE job_id=?", jobId)
-	if err != nil {
-		return []string{}, err
+	var id int
+	row := s.store.QueryRow("SELECT id FROM email_lists WHERE job_id=?", jobId)
+	if err := row.Scan(&id); err != nil {
+		return []string{}, nil
 	}
-	defer rows.Close()
 
-	emailList := []string{}
-	for rows.Next() {
-		var email string
-		if err := rows.Scan(&email); err != nil {
-			return nil, err
-		}
-		emailList = append(emailList, email)
-	}
+	var emailList []string
+	// TODO FIX THIS
+	// rows, err := s.store.QueryRow("SELECT")
 
 	return emailList, nil
 }
 
+// TODO fix this
 func (s *SqliteEmailRepo) GetTemplate(scheduleId int) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
