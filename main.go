@@ -61,15 +61,19 @@ func JobTypeToString(t JobType) string {
 	return "not found"
 }
 
+// TODO add context support
 type EmailRepo interface {
-	// Given job id (primary key of job table / job.Id), returns
+	// returns the id of the associated email list of the given job
+	GetListId(jobId int) (int, error)
+	// Given list id (primary key of email_lists table / email_lists.id), returns
 	// the email list associated with the given
-	GetEmailList(jobId int) ([]string, error)
+	GetEmailList(listId int) ([]string, error)
 	// Given scheduleId returns the associated template of the
 	// given schedule id
 	GetTemplate(scheduleId int) (string, error)
 }
 
+// TODO add context support
 type SqliteEmailRepo struct {
 	store *sql.DB
 	mu    sync.Mutex
@@ -82,22 +86,50 @@ func NewSqliteEmailRepo(db *sql.DB) *SqliteEmailRepo {
 	}
 }
 
-// TODO fix this
-func (s *SqliteEmailRepo) GetEmailList(jobId int) ([]string, error) {
+func (s *SqliteEmailRepo) GetListId(jobId int) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var id int
+	var listId int
 	row := s.store.QueryRow("SELECT id FROM email_lists WHERE job_id=?", jobId)
-	if err := row.Scan(&id); err != nil {
-		return []string{}, nil
+	if err := row.Scan(&listId); err != nil {
+		return -1, err
 	}
 
-	var emailList []string
-	// TODO FIX THIS
-	// rows, err := s.store.QueryRow("SELECT")
+	return listId, nil
+}
 
-	return emailList, nil
+func (s *SqliteEmailRepo) GetEmailList(listId int) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	query := `
+    SELECT ea.email
+    FROM email_addresses AS ea
+    JOIN subscriptions AS s ON s.email_address_id = ea.id
+    WHERE s.email_list_id = ?
+  `
+
+	rows, err := s.store.Query(query, listId)
+	if err != nil {
+		return nil, fmt.Errorf("query failed: %w", err)
+	}
+	defer rows.Close()
+
+	var emails []string
+	for rows.Next() {
+		var email string
+		if err = rows.Scan(&email); err != nil {
+			return nil, fmt.Errorf("row scan failed: %w", err)
+		}
+		emails = append(emails, email)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
+	return emails, nil
 }
 
 // TODO fix this
@@ -153,6 +185,7 @@ var APPENV = Env{
 	Duration:   time.Duration(time.Second),
 }
 
+// TODO add context support
 type JobRepo interface {
 	CreateJob(job *Job) error
 	GetJobs() ([]*Job, error)
@@ -348,6 +381,7 @@ type ScheduleDBEntry struct {
 	ScheduleId int
 }
 
+// TODO add context support
 type ScheduleRepo interface {
 	// pass just the job the scheduler will take care of finding its next occurence
 	ScheduleJob(job *Job) error
@@ -593,7 +627,7 @@ func (e *Executor) Worker(entry *ScheduleDBEntry) {
 	for i := range entry.RetryLimit {
 		err = runner(&entry.Job)
 		if err != nil {
-			log.Printf("Job with Id %d failed on attempt %d", entry.Id, i)
+			log.Printf("Job with Id %d failed on attempt %d, err: %s", entry.Id, i, err.Error())
 			continue
 		}
 		break
@@ -638,8 +672,15 @@ func (e *Executor) EmailRunner(job *Job) error {
 		return NewError(ERROR_JOB_TYPE_MISMATCH, job.Type, TypeEmail)
 	}
 
-	emailList, err := e.emailRepo.GetEmailList(job.Id)
+	emailListId, err := e.emailRepo.GetListId(job.Id)
 	if err != nil {
+		log.Println("wuh")
+		return err
+	}
+
+	emailList, err := e.emailRepo.GetEmailList(emailListId)
+	if err != nil {
+		log.Println("wuh2")
 		return err
 	}
 
