@@ -10,12 +10,16 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"sync"
 	"time"
 
+	"github.com/cespare/xxhash/v2"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/robfig/cron"
 )
+
+const MAX_FILE_SIZE = 5 << 20 // 5mb
 
 type JobType uint8
 
@@ -709,19 +713,58 @@ func NewSqliteDb() *sql.DB {
 	return db
 }
 
+// returns the 64-bit xxhash digest of x with a zero seed
+func hashXX(x int) uint64 {
+	return xxhash.Sum64String(strconv.Itoa(x))
+}
+
+type TemplateDB interface {
+	SaveTemplate(jobId int, t string) error
+	GetTemplate(jobId int) (string, error)
+}
+
+// not using pointers for now since data doesnt need to persist. we will see about this later
+type LocalTemplateDB struct {
+	dir string
+}
+
+func NewLocalTemplateDB(dir string) LocalTemplateDB {
+	return LocalTemplateDB{
+		dir: dir,
+	}
+}
+
+func (l LocalTemplateDB) SaveTemplate(jobId int, t string) error {
+	path := fmt.Sprintf("%s/%x", l.dir, hashXX(jobId))
+	log.Println(path)
+
+	return nil
+}
+
+func (l LocalTemplateDB) GetTemplate(jobId int) (string, error) {
+	path := fmt.Sprintf("%s/%x", l.dir, hashXX(jobId))
+	log.Println(path)
+
+	return "", nil
+}
+
 func main() {
-	sqlite3db := NewSqliteDb()
-
-	jobRepo := NewSqliteJobRepo(sqlite3db)
-	scheduleRepo := NewSqliteScheduleRepo(sqlite3db)
-
-	scheduler := NewScheduler(jobRepo, scheduleRepo)
-	go scheduler.Start()
-
-	executor := NewExecutor(APPENV.Duration, sqlite3db)
-	go executor.Start()
-
-	server := NewServer(jobRepo, ":8080")
-
-	log.Println(server.Start())
+	// sqlite3db := NewSqliteDb()
+	//
+	// jobRepo := NewSqliteJobRepo(sqlite3db)
+	// scheduleRepo := NewSqliteScheduleRepo(sqlite3db)
+	//
+	// scheduler := NewScheduler(jobRepo, scheduleRepo)
+	// go scheduler.Start()
+	//
+	// executor := NewExecutor(APPENV.Duration, sqlite3db)
+	// go executor.Start()
+	//
+	// server := NewServer(jobRepo, ":8080")
+	//
+	// log.Println(server.Start())
+	templateDB := NewLocalTemplateDB("./templates")
+	for i := range 5 {
+		templateDB.GetTemplate(i)
+	}
 }
