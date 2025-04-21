@@ -8,13 +8,16 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/smtp"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/cespare/xxhash/v2"
+	"github.com/joho/godotenv"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/robfig/cron"
 )
@@ -67,26 +70,26 @@ func JobTypeToString(t JobType) string {
 
 // TODO add context support
 type EmailRepo interface {
-	// returns the id of the associated email list of the given job
 	GetListId(jobId int) (int, error)
-	// Given list id (primary key of email_lists table / email_lists.id), returns
-	// the email list associated with the given
-	GetEmailList(listId int) ([]string, error)
-	// Given scheduleId returns the associated template of the
-	// given schedule id
-	GetTemplate(scheduleId int) (string, error)
+	// Given job id, returns
+	// the email list associated with the given job id
+	GetEmailList(jobId int) ([]string, error)
+	// Given job id returns the associated template of the
+	GetTemplate(jobId int) (string, error)
 }
 
 // TODO add context support
 type SqliteEmailRepo struct {
-	store *sql.DB
-	mu    sync.Mutex
+	store         *sql.DB
+	templateStore TemplateStore
+	mu            sync.Mutex
 }
 
 func NewSqliteEmailRepo(db *sql.DB) *SqliteEmailRepo {
 	return &SqliteEmailRepo{
-		store: db,
-		mu:    sync.Mutex{},
+		store:         db,
+		templateStore: NewLocalTemplateStore(os.Getenv("TEMPLATE_DIR")),
+		mu:            sync.Mutex{},
 	}
 }
 
@@ -94,8 +97,10 @@ func (s *SqliteEmailRepo) GetListId(jobId int) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	query := `SELECT list_id FROM email_job_data WHERE job_id=?`
+
+	row := s.store.QueryRow(query, jobId)
 	var listId int
-	row := s.store.QueryRow("SELECT id FROM email_lists WHERE job_id=?", jobId)
 	if err := row.Scan(&listId); err != nil {
 		return -1, err
 	}
@@ -111,7 +116,7 @@ func (s *SqliteEmailRepo) GetEmailList(listId int) ([]string, error) {
     SELECT ea.email
     FROM email_addresses AS ea
     JOIN subscriptions AS s ON s.email_address_id = ea.id
-    WHERE s.email_list_id = ?
+    WHERE s.email_list_id = ?;
   `
 
 	rows, err := s.store.Query(query, listId)
@@ -137,23 +142,24 @@ func (s *SqliteEmailRepo) GetEmailList(listId int) ([]string, error) {
 }
 
 // TODO fix this
-func (s *SqliteEmailRepo) GetTemplate(scheduleId int) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	row := s.store.QueryRow("SELECT path FROM email_template WHERE schedule_id=?", scheduleId)
-
-	var path string
-	if err := row.Scan(&path); err != nil {
-		return "", err
-	}
-
-	template, err := os.ReadFile("file.txt")
-	if err != nil {
-		return "", err
-	}
-
-	return string(template), nil
+func (s *SqliteEmailRepo) GetTemplate(jobId int) (string, error) {
+	// s.mu.Lock()
+	// defer s.mu.Unlock()
+	//
+	// row := s.store.QueryRow("SELECT path FROM email_template WHERE schedule_id=?", scheduleId)
+	//
+	// var path string
+	// if err := row.Scan(&path); err != nil {
+	// 	return "", err
+	// }
+	//
+	// template, err := os.ReadFile("file.txt")
+	// if err != nil {
+	// 	return "", err
+	// }
+	//
+	// return string(template), nil
+	return s.templateStore.GetTemplate(jobId)
 }
 
 type Env struct {
@@ -370,15 +376,6 @@ func (s *Scheduler) Start() {
 		}
 	}
 }
-
-// probably dont need this
-// func (s *Scheduler) Schedule(job *Job) {
-// 	log.Println("hello")
-// 	// TODO handler error
-// 	if err := s.scheduleRepo.ScheduleJob(job); err != nil {
-// 		panic(err)
-// 	}
-// }
 
 type ScheduleDBEntry struct {
 	Job
@@ -607,7 +604,7 @@ func (e *Executor) Poll() {
 	events, err := e.scheduleRepo.GetJobsDueBefore(t)
 	if err != nil {
 		// TODO properly log this
-		// maybe consider fail threshold and if it passes than send an alert
+		// maybe consider fail threshold and if it passes then send an alert
 		log.Println(err)
 		return
 	}
@@ -650,6 +647,15 @@ func (e *Executor) Worker(entry *ScheduleDBEntry) {
 	}
 }
 
+func SendEmails(to []string, subject string, template string) error {
+	auth := smtp.PlainAuth("", os.Getenv("FROM_EMAIL"), os.Getenv("FROM_EMAIL_PASSWORD"), os.Getenv("FROM_EMAIL_SMTP"))
+
+	headers := "MIME-version: 1.0;\nContent-Type: text/html; charset=\"UTF-8\";"
+	message := "Subject: " + subject + "\n" + headers + "\n\n" + template
+
+	return smtp.SendMail(os.Getenv("SMTP_ADDR"), auth, os.Getenv("FROM_EMAIL"), to, []byte(message))
+}
+
 type JobRunner func(job *Job) error
 
 func (e *Executor) GetRunner(t JobType) (JobRunner, error) {
@@ -667,7 +673,7 @@ func (e *Executor) GetRunner(t JobType) (JobRunner, error) {
 	return nil, NewError(ERROR_JOB_RUNNER_NOT_FOUND)
 }
 
-func (e *Executor) CustomRunner(job *Job) error {
+func (e *Executor) CustomRunner(entry *Job) error {
 	return nil
 }
 
@@ -676,20 +682,24 @@ func (e *Executor) EmailRunner(job *Job) error {
 		return NewError(ERROR_JOB_TYPE_MISMATCH, job.Type, TypeEmail)
 	}
 
-	emailListId, err := e.emailRepo.GetListId(job.Id)
+	listId, err := e.emailRepo.GetListId(job.Id)
 	if err != nil {
-		log.Println("wuh")
 		return err
 	}
 
-	emailList, err := e.emailRepo.GetEmailList(emailListId)
+	emailList, err := e.emailRepo.GetEmailList(listId)
 	if err != nil {
-		log.Println("wuh2")
 		return err
 	}
 
+	template, err := e.emailRepo.GetTemplate(job.Id)
+	if err != nil {
+		return err
+	}
+
+	// SendEmails(emailList, "Empty Subject", template)
 	for _, email := range emailList {
-		log.Printf("Sending email to %s", email)
+		log.Printf("Sending email to %s with template %s", email, template)
 	}
 
 	return nil
@@ -714,57 +724,120 @@ func NewSqliteDb() *sql.DB {
 }
 
 // returns the 64-bit xxhash digest of x with a zero seed
-func hashXX(x int) uint64 {
+func HashXX(x int) uint64 {
 	return xxhash.Sum64String(strconv.Itoa(x))
 }
 
-type TemplateDB interface {
+// retuns the constructed path of given digest. starts with a /
+func ConstructPath(digest uint64) string {
+	hash := fmt.Sprintf("%x", digest)
+	path := fmt.Sprintf("%s/%s/%s.html", hash[0:4], hash[4:8], hash[8:16])
+	return path
+}
+
+type TemplateStore interface {
 	SaveTemplate(jobId int, t string) error
 	GetTemplate(jobId int) (string, error)
 }
 
 // not using pointers for now since data doesnt need to persist. we will see about this later
-type LocalTemplateDB struct {
+type LocalTemplateStore struct {
 	dir string
 }
 
-func NewLocalTemplateDB(dir string) LocalTemplateDB {
-	return LocalTemplateDB{
+func NewLocalTemplateStore(dir string) LocalTemplateStore {
+	return LocalTemplateStore{
 		dir: dir,
 	}
 }
 
-func (l LocalTemplateDB) SaveTemplate(jobId int, t string) error {
-	path := fmt.Sprintf("%s/%x", l.dir, hashXX(jobId))
-	log.Println(path)
+func (l LocalTemplateStore) SaveTemplate(jobId int, t string) error {
+	path := fmt.Sprintf("%s/%s", l.dir, ConstructPath(HashXX(jobId)))
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
+		return err
+	}
+
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	file.Write([]byte(t))
 
 	return nil
 }
 
-func (l LocalTemplateDB) GetTemplate(jobId int) (string, error) {
-	path := fmt.Sprintf("%s/%x", l.dir, hashXX(jobId))
-	log.Println(path)
+func (l LocalTemplateStore) GetTemplate(jobId int) (string, error) {
+	path := fmt.Sprintf("%s/%s", l.dir, ConstructPath(HashXX(jobId)))
 
-	return "", nil
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+
+	return string(data), nil
+}
+
+var ALLOWED_TAGS = map[string]bool{
+	"html":   true,
+	"head":   true,
+	"body":   true,
+	"style":  true,
+	"table":  true,
+	"tr":     true,
+	"td":     true,
+	"th":     true,
+	"thead":  true,
+	"tbody":  true,
+	"tfoot":  true,
+	"div":    true,
+	"span":   true,
+	"p":      true,
+	"br":     true,
+	"hr":     true,
+	"h1":     true,
+	"h2":     true,
+	"h3":     true,
+	"h4":     true,
+	"h5":     true,
+	"h6":     true,
+	"a":      true,
+	"img":    true,
+	"strong": true,
+	"em":     true,
+	"b":      true,
+	"i":      true,
+	"u":      true,
+	"ul":     true,
+	"ol":     true,
+	"li":     true,
+	"font":   true,
+	"center": true,
+	"meta":   true,
+}
+
+// TODO implement this
+func SanitizeTemplate(t string) string {
+	return t
 }
 
 func main() {
-	// sqlite3db := NewSqliteDb()
-	//
-	// jobRepo := NewSqliteJobRepo(sqlite3db)
-	// scheduleRepo := NewSqliteScheduleRepo(sqlite3db)
-	//
-	// scheduler := NewScheduler(jobRepo, scheduleRepo)
-	// go scheduler.Start()
-	//
-	// executor := NewExecutor(APPENV.Duration, sqlite3db)
-	// go executor.Start()
-	//
-	// server := NewServer(jobRepo, ":8080")
-	//
-	// log.Println(server.Start())
-	templateDB := NewLocalTemplateDB("./templates")
-	for i := range 5 {
-		templateDB.GetTemplate(i)
-	}
+	godotenv.Load()
+	sqlite3db := NewSqliteDb()
+
+	jobRepo := NewSqliteJobRepo(sqlite3db)
+	scheduleRepo := NewSqliteScheduleRepo(sqlite3db)
+
+	scheduler := NewScheduler(jobRepo, scheduleRepo)
+	go scheduler.Start()
+
+	executor := NewExecutor(APPENV.Duration, sqlite3db)
+	go executor.Start()
+
+	server := NewServer(jobRepo, ":8080")
+
+	log.Println(server.Start())
 }
