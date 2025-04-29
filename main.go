@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -199,10 +200,17 @@ var APPENV = Env{
 type JobRepo interface {
 	CreateJob(job *Job) error
 	GetJobs() ([]*Job, error)
+	SaveEmailData(data EmailData) error
+	GetEmailData(jobId int) (EmailData, error)
 }
 
 type CDCQueue interface {
 	Listen() *Job
+}
+
+type EmailData struct {
+	JobId  int `json:"job_id"`
+	ListId int `json:"list_id"`
 }
 
 type Job struct {
@@ -291,7 +299,11 @@ func NewServer(jobRepo JobRepo, addr string) *Server {
 	}
 }
 
-func (s *Server) handlePostCron(w http.ResponseWriter, r *http.Request) {
+// This is now wrapped by cron middleware
+// this is so we can handle each cron job individually
+// by posting its job information, then the designated endpoint handler
+// can take care of uplaoding any data to the db
+func (s *Server) handlePostEmailCron(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	defer r.Body.Close()
 	if err != nil {
@@ -299,19 +311,13 @@ func (s *Server) handlePostCron(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var job Job
-	err = json.Unmarshal(body, &job)
+	var emailData EmailData
+	err = json.Unmarshal(body, &emailData)
 	if err != nil {
 		http.Error(w, "Malformed Request", http.StatusBadRequest)
 		return
 	}
 
-	if err = job.Validate(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	s.JobRepo.CreateJob(&job)
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Success"))
 }
@@ -337,11 +343,23 @@ func (s *Server) healthCheck(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("Alive"))
 }
 
+// TODO wrap the mux with the cron middleare
 func (s *Server) NewCronMux() *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /cron", s.handlePostCron)
-	mux.HandleFunc("GET /cron", s.handleGetCrons)
-	mux.HandleFunc("GET /health_check", s.healthCheck)
+
+	CronMiddlewareStack := MiddlewareChain(
+		s.CronMiddleware,
+	)
+
+	postMux := http.NewServeMux()
+	postMux.HandleFunc("POST /email", s.handlePostEmailCron)
+
+	// TODO research method based routing
+	mux.Handle("/", CronMiddlewareStack(postMux))
+
+	getMux := http.NewServeMux()
+	getMux.HandleFunc("GET /cron", s.handleGetCrons)
+	getMux.HandleFunc("GET /health_check", s.healthCheck)
 
 	return mux
 }
@@ -350,9 +368,54 @@ func (s *Server) Start() error {
 	mux := http.NewServeMux()
 	cronMux := s.NewCronMux()
 
-	mux.Handle("/api/v1/", http.StripPrefix("/api/v1", cronMux))
+	mux.Handle("/api/v1/cron/", http.StripPrefix("/api/v1/cron/", cronMux))
 
 	return http.ListenAndServe(s.Addr, mux)
+}
+
+type Middleware func(next http.Handler) http.Handler
+
+func MiddlewareChain(xs ...Middleware) Middleware {
+	return func(next http.Handler) http.Handler {
+		for i := len(xs) - 1; i >= 0; i-- {
+			next = xs[i](next)
+		}
+
+		return next
+	}
+}
+
+func (s *Server) CronMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		defer r.Body.Close()
+		if err != nil {
+			http.Error(w, "Malformed Request", http.StatusBadRequest)
+			return
+		}
+
+		var job Job
+		err = json.Unmarshal(body, &job)
+		if err != nil {
+			http.Error(w, "Malformed Request", http.StatusBadRequest)
+			return
+		}
+
+		if err = job.Validate(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		s.JobRepo.CreateJob(&job)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 type Scheduler struct {
@@ -489,6 +552,32 @@ func (s *SqliteJobRepo) GetJobs() ([]*Job, error) {
 	}
 
 	return jobs, nil
+}
+
+func (s *SqliteJobRepo) SaveEmailData(data EmailData) error {
+	s.mu.Lock()
+	defer s.mu.Lock()
+
+	query := "INSERT INTO email_job_data (job_id, list_id) VALUES (?, ?)"
+	_, err := s.store.Exec(query, data.JobId, data.ListId)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *SqliteJobRepo) GetEmailData(jobId int) (EmailData, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	row := s.store.QueryRow("SELECT * FROM email_job_data WHERE job_id=?", jobId)
+	var emailData EmailData
+	if err := row.Scan(&emailData); err != nil {
+		return emailData, err
+	}
+
+	return emailData, nil
 }
 
 func (s *SqliteJobRepo) Listen() *Job {
