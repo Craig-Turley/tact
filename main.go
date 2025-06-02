@@ -1,15 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
-	"net/smtp"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,13 +12,25 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bwmarrin/snowflake"
 	"github.com/cespare/xxhash/v2"
 	"github.com/joho/godotenv"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/robfig/cron"
 )
 
-const MAX_FILE_SIZE = 5 << 20 // 5mb
+var TIME_FORMAT string
+
+type Status uint8
+
+const (
+	StatusStart Status = iota
+	StatusScheduled
+	StatusFailed
+	StatusRunning
+	StatusSuccess
+	StatusEnd
+)
 
 type JobType uint8
 
@@ -37,17 +44,6 @@ const (
 	TypeDiscord
 
 	TypeEnd
-)
-
-type Status uint8
-
-const (
-	StatusStart Status = iota
-	StatusScheduled
-	StatusFailed
-	StatusRunning
-	StatusSuccess
-	StatusEnd
 )
 
 func (t JobType) Valid() bool {
@@ -69,14 +65,200 @@ func JobTypeToString(t JobType) string {
 	return "not found"
 }
 
+var sf *snowflake.Node
+
+func Init(node int64) error {
+	var err error
+	sf, err = snowflake.NewNode(node)
+	return err
+}
+
+func NewId() snowflake.ID {
+	return sf.Generate()
+}
+
+type Job struct {
+	Id         snowflake.ID `json:"job_id"`
+	Name       string       `json:"name"`
+	Cron       string       `json:"cron"`
+	RetryLimit int          `json:"retry_limit"`
+	Type       JobType      `json:"job_type"`
+}
+
+func NewJob(name, cron string, retryLimit int, jobType JobType) *Job {
+	return &Job{
+		Name:       name,
+		Cron:       cron,
+		RetryLimit: retryLimit,
+		Type:       jobType,
+	}
+}
+
+// Validates the job fields provided
+func (j *Job) Validate() error {
+	if len(j.Name) == 0 {
+		return NewError(ERROR_JOB_NAME_NOT_PROVIDED)
+	}
+
+	if ok := j.Type.Valid(); !ok {
+		return NewError(ERROR_JOB_TYPE_INVALID)
+	}
+
+	if j.RetryLimit <= 0 {
+		return NewError(ERROR_INVALID_RETRY_LIMIT)
+	}
+
+	return nil
+}
+
+type JobService interface {
+	// pass just the job the scheduler will take care of finding its next occurence
+	CreateJob(job *Job) error
+	GetJob(id snowflake.ID) (*Job, error)
+}
+
+type jobService struct {
+	repo JobRepo
+}
+
+// jobService implements the JobService interface
+// can pass it any repo that fits the JobRepo interface
+func NewJobService(repo JobRepo) *jobService {
+	return &jobService{repo: repo}
+}
+
+func (s *jobService) CreateJob(job *Job) error {
+	if err := job.Validate(); err != nil {
+		return err
+	}
+
+	_, err := cron.Parse(job.Cron)
+	if err != nil {
+		return err
+	}
+
+	job.Id = NewId()
+	if err := s.repo.CreateJob(job); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *jobService) GetJob(id snowflake.ID) (*Job, error) {
+	return s.repo.GetJob(id)
+}
+
+type JobRepo interface {
+	CreateJob(job *Job) error
+	GetJob(id snowflake.ID) (*Job, error)
+}
+
+type SqliteJobRepo struct {
+	store   *sql.DB
+	mu      sync.Mutex
+	cdcChan chan *Job // not sure about this. supposed to mimic cdc but not sure if I want/need it for my 0 users
+}
+
+func NewSqliteJobRepo(db *sql.DB) *SqliteJobRepo {
+	return &SqliteJobRepo{
+		store:   db,
+		mu:      sync.Mutex{},
+		cdcChan: make(chan *Job),
+	}
+}
+
+// CreateJob sets the id of the job passed in from autoincrementing table and returns an erro
+func (s *SqliteJobRepo) CreateJob(job *Job) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	query := "INSERT INTO jobs (id, name, cron, retry_limit, type) VALUES (?, ?, ?, ?, ?)"
+	_, err := s.store.Exec(query, job.Id, job.Name, job.Cron, job.RetryLimit, job.Type)
+	if err != nil {
+		return err
+	}
+
+	// again, this is an optimization for approxomatley 0 users
+	// and if this deadlocks...we're screwed
+	// deadlock counter: 2
+	// "why do I even have this?" counter: 2
+	// s.cdcChan <- job
+
+	return nil
+}
+
+// ahh yes, when this has a lot of history than say goodbye to your memory
+func (s *SqliteJobRepo) GetJob(id snowflake.ID) (*Job, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	row := s.store.QueryRow("SELECT * FROM jobs WHERE id=?", id)
+	if err := row.Err(); err != nil {
+		return nil, err
+	}
+
+	var job Job
+	if err := row.Scan(&job.Id, &job.Name, &job.Cron, &job.RetryLimit, &job.Type); err != nil {
+		return nil, err
+	}
+
+	return &job, nil
+}
+
+// Using this as a type alias for an email string
+// possibly might move this later
+type Email string
+
+// Using this as a type alias for an template string
+// possibly might move this later
+type Template string
+
+type EmailData struct {
+	JobId  snowflake.ID `json:"job_id"`
+	ListId snowflake.ID `json:"list_id"`
+}
+
+type EmailService interface {
+	CreateEmailJob(data *EmailData) error
+	GetEmailJobData(jobId snowflake.ID) (*EmailData, error)
+	GetEmailList(jobId snowflake.ID) ([]Email, error)
+	GetTemplate(jobId snowflake.ID) (Template, error)
+}
+
+type emailService struct {
+	repo          EmailRepo
+	templateStore TemplateStore
+}
+
+func NewEmailService(repo EmailRepo, store TemplateStore) *emailService {
+	return &emailService{
+		repo:          repo,
+		templateStore: store,
+	}
+}
+
+func (s *emailService) CreateEmailJob(data *EmailData) error {
+	return s.repo.SaveEmailData(data)
+}
+
+func (s *emailService) GetEmailJobData(jobId snowflake.ID) (*EmailData, error) {
+	return s.repo.GetEmailData(jobId)
+}
+
+func (s *emailService) GetEmailList(jobId snowflake.ID) ([]Email, error) {
+	return s.repo.GetEmailList(jobId)
+}
+
+func (s *emailService) GetTemplate(jobId snowflake.ID) (Template, error) {
+	return s.templateStore.GetTemplate(jobId)
+}
+
 // TODO add context support
 type EmailRepo interface {
-	GetListId(jobId int) (int, error)
-	// Given job id, returns
-	// the email list associated with the given job id
-	GetEmailList(jobId int) ([]string, error)
-	// Given job id returns the associated template of the
-	GetTemplate(jobId int) (string, error)
+	SaveEmailData(data *EmailData) error
+	GetEmailData(jobId snowflake.ID) (*EmailData, error)
+	GetEmailList(listId snowflake.ID) ([]Email, error)
 }
 
 // TODO add context support
@@ -94,22 +276,44 @@ func NewSqliteEmailRepo(db *sql.DB) *SqliteEmailRepo {
 	}
 }
 
-func (s *SqliteEmailRepo) GetListId(jobId int) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	query := `SELECT list_id FROM email_job_data WHERE job_id=?`
-
-	row := s.store.QueryRow(query, jobId)
-	var listId int
-	if err := row.Scan(&listId); err != nil {
-		return -1, err
-	}
-
-	return listId, nil
+func (s *SqliteEmailRepo) SaveEmailData(data *EmailData) error {
+	query := "INSERT INTO email_job_data (job_id, list_id) VALUES (?, ?)"
+	_, err := s.store.Exec(query, data.JobId, data.ListId)
+	return err
 }
 
-func (s *SqliteEmailRepo) GetEmailList(listId int) ([]string, error) {
+func (s *SqliteEmailRepo) GetEmailData(jobId snowflake.ID) (*EmailData, error) {
+	var emailData EmailData
+	row := s.store.QueryRow("SELECT * FROM email_job_data WHERE job_id = ?", jobId)
+	if row.Err() != nil {
+		return nil, row.Err()
+	}
+
+	err := row.Scan(&emailData.JobId, &emailData.ListId)
+	if err != nil {
+		return nil, err
+	}
+
+	return &emailData, err
+}
+
+//
+// func (s *SqliteEmailRepo) GetListId(jobId int) (int, error) {
+// 	s.mu.Lock()
+// 	defer s.mu.Unlock()
+//
+// 	query := `SELECT list_id FROM email_job_data WHERE job_id=?`
+//
+// 	row := s.store.QueryRow(query, jobId)
+// 	var listId int
+// 	if err := row.Scan(&listId); err != nil {
+// 		return -1, err
+// 	}
+//
+// 	return listId, nil
+// }
+
+func (s *SqliteEmailRepo) GetEmailList(listId snowflake.ID) ([]Email, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -126,13 +330,13 @@ func (s *SqliteEmailRepo) GetEmailList(listId int) ([]string, error) {
 	}
 	defer rows.Close()
 
-	var emails []string
+	var emails []Email
 	for rows.Next() {
 		var email string
 		if err = rows.Scan(&email); err != nil {
 			return nil, fmt.Errorf("row scan failed: %w", err)
 		}
-		emails = append(emails, email)
+		emails = append(emails, Email(email))
 	}
 
 	if err := rows.Err(); err != nil {
@@ -143,7 +347,7 @@ func (s *SqliteEmailRepo) GetEmailList(listId int) ([]string, error) {
 }
 
 // TODO fix this
-func (s *SqliteEmailRepo) GetTemplate(jobId int) (string, error) {
+func (s *SqliteEmailRepo) GetTemplate(jobId snowflake.ID) (Template, error) {
 	// s.mu.Lock()
 	// defer s.mu.Unlock()
 	//
@@ -163,648 +367,9 @@ func (s *SqliteEmailRepo) GetTemplate(jobId int) (string, error) {
 	return s.templateStore.GetTemplate(jobId)
 }
 
-type Env struct {
-	SqlitePath string
-	TimeFormat string
-	Duration   time.Duration
-}
-
-var (
-	ERROR_INVALID_RETRY_LIMIT   = "Error invalid retry limit"
-	ERROR_INVALID_JOB_TYPE      = "Error invalid job type"
-	ERROR_JOB_NAME_NOT_PROVIDED = "Error job name not provided"
-	ERROR_JOB_RUNNER_NOT_FOUND  = "Error associated job runner not found"
-	ERROR_JOB_TYPE_MISMATCH     = "Error runner and job type mismatch. Got %d expected %d"
-	ERROR_JOB_FAILED            = "Error job failed"
-)
-
-func NewError(template string, args ...any) error {
-	if countFormats(template) != len(args) {
-		return errors.New("Error: No information available - error generating message")
-	}
-	return errors.New(fmt.Sprintf(template, args...))
-}
-
-func countFormats(format string) int {
-	re := regexp.MustCompile(`%[dfsuXxobegt]`)
-	return len(re.FindAllString(format, -1))
-}
-
-var APPENV = Env{
-	SqlitePath: "./scheduling.db",
-	TimeFormat: "2006-01-02 15:04:05",
-	Duration:   time.Duration(time.Second),
-}
-
-// TODO add context support
-type JobRepo interface {
-	CreateJob(job *Job) error
-	GetJobs() ([]*Job, error)
-	SaveEmailData(data EmailData) error
-	GetEmailData(jobId int) (EmailData, error)
-}
-
-type CDCQueue interface {
-	Listen() *Job
-}
-
-type EmailData struct {
-	JobId  int `json:"job_id"`
-	ListId int `json:"list_id"`
-}
-
-type Job struct {
-	Id         int     `json:"id"`
-	Name       string  `json:"name"`
-	Cron       string  `json:"cron"`
-	RetryLimit int     `json:"retry_limit"`
-	Type       JobType `json:"job_type"`
-}
-
-func NewJob(name, cron string, retryLimit int, jobType JobType) *Job {
-	return &Job{
-		Name:       name,
-		Cron:       cron,
-		RetryLimit: retryLimit,
-		Type:       jobType,
-	}
-}
-
-func (j *Job) Validate() error {
-	if len(j.Name) == 0 {
-		return NewError(ERROR_JOB_NAME_NOT_PROVIDED)
-	}
-
-	if ok := j.Type.Valid(); !ok {
-		return NewError(ERROR_INVALID_JOB_TYPE)
-	}
-
-	if j.RetryLimit <= 0 {
-		return NewError(ERROR_INVALID_RETRY_LIMIT)
-	}
-
-	return nil
-}
-
-// in memory for testing
-// type DBWithCDC struct {
-// 	idInc   int
-// 	store   map[int]*Job
-// 	cdcChan chan *Job
-// 	mu      sync.Mutex
-// }
-//
-// func NewDBWithCDC() *DBWithCDC {
-// 	return &DBWithCDC{
-// 		idInc:   0,
-// 		store:   make(map[int]*Job),
-// 		cdcChan: make(chan *Job),
-// 		mu:      sync.Mutex{},
-// 	}
-// }
-//
-// func (db *DBWithCDC) CreateJob(job *Job) error {
-// 	db.mu.Lock()
-// 	defer db.mu.Unlock()
-// 	job.Id = db.idInc
-// 	db.idInc += 1
-//
-// 	db.store[job.Id] = job
-// 	db.cdcChan <- job
-//
-// 	return nil
-// }
-//
-// func (db *DBWithCDC) GetJobs() ([]*Job, error) {
-// 	res := make([]*Job, 0, len(db.store))
-// 	for _, job := range db.store {
-// 		res = append(res, job)
-// 	}
-// 	return res, nil
-// }
-//
-// func (db *DBWithCDC) Listen() *Job {
-// 	return <-db.cdcChan
-// }
-
-type Server struct {
-	JobRepo JobRepo
-	Addr    string
-}
-
-func NewServer(jobRepo JobRepo, addr string) *Server {
-	return &Server{
-		Addr:    addr,
-		JobRepo: jobRepo,
-	}
-}
-
-// This is now wrapped by cron middleware
-// this is so we can handle each cron job individually
-// by posting its job information, then the designated endpoint handler
-// can take care of uplaoding any data to the db
-func (s *Server) handlePostEmailCron(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
-	defer r.Body.Close()
-	if err != nil {
-		http.Error(w, "Malformed Request", http.StatusBadRequest)
-		return
-	}
-
-	var emailData EmailData
-	err = json.Unmarshal(body, &emailData)
-	if err != nil {
-		http.Error(w, "Malformed Request", http.StatusBadRequest)
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Success"))
-}
-
-func (s *Server) handleGetCrons(w http.ResponseWriter, r *http.Request) {
-	jobs, err := s.JobRepo.GetJobs()
-	if err != nil {
-		http.Error(w, "Error getting jobs", http.StatusInternalServerError)
-		return
-	}
-
-	j, err := json.Marshal(jobs)
-	if err != nil {
-		http.Error(w, "Error sending jobs", http.StatusInternalServerError)
-	}
-
-	w.WriteHeader(http.StatusOK)
-	w.Write(j)
-}
-
-func (s *Server) healthCheck(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Alive"))
-}
-
-// TODO wrap the mux with the cron middleare
-func (s *Server) NewCronMux() *http.ServeMux {
-	mux := http.NewServeMux()
-
-	CronMiddlewareStack := MiddlewareChain(
-		s.CronMiddleware,
-	)
-
-	postMux := http.NewServeMux()
-	postMux.HandleFunc("POST /email", s.handlePostEmailCron)
-
-	// TODO research method based routing
-	mux.Handle("/", CronMiddlewareStack(postMux))
-
-	getMux := http.NewServeMux()
-	getMux.HandleFunc("GET /cron", s.handleGetCrons)
-	getMux.HandleFunc("GET /health_check", s.healthCheck)
-
-	return mux
-}
-
-func (s *Server) Start() error {
-	mux := http.NewServeMux()
-	cronMux := s.NewCronMux()
-
-	mux.Handle("/api/v1/cron/", http.StripPrefix("/api/v1/cron/", cronMux))
-
-	return http.ListenAndServe(s.Addr, mux)
-}
-
-type Middleware func(next http.Handler) http.Handler
-
-func MiddlewareChain(xs ...Middleware) Middleware {
-	return func(next http.Handler) http.Handler {
-		for i := len(xs) - 1; i >= 0; i-- {
-			next = xs[i](next)
-		}
-
-		return next
-	}
-}
-
-func (s *Server) CronMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		body, err := io.ReadAll(r.Body)
-		defer r.Body.Close()
-		if err != nil {
-			http.Error(w, "Malformed Request", http.StatusBadRequest)
-			return
-		}
-
-		var job Job
-		err = json.Unmarshal(body, &job)
-		if err != nil {
-			http.Error(w, "Malformed Request", http.StatusBadRequest)
-			return
-		}
-
-		if err = job.Validate(); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		s.JobRepo.CreateJob(&job)
-		r.Body = io.NopCloser(bytes.NewReader(body))
-
-		next.ServeHTTP(w, r)
-	})
-}
-
-type Scheduler struct {
-	cdcQueue     CDCQueue
-	scheduleRepo ScheduleRepo
-}
-
-func NewScheduler(que CDCQueue, scheduleRepo ScheduleRepo) *Scheduler {
-	return &Scheduler{
-		cdcQueue:     que,
-		scheduleRepo: scheduleRepo,
-	}
-}
-
-func (s *Scheduler) Start() {
-	for {
-		job := s.cdcQueue.Listen()
-		if err := s.scheduleRepo.ScheduleJob(job); err != nil {
-			// TODO handle this error
-			panic(err)
-		}
-	}
-}
-
-type ScheduleDBEntry struct {
-	Job
-	ScheduleId int
-}
-
-// TODO add context support
-type ScheduleRepo interface {
-	// pass just the job the scheduler will take care of finding its next occurence
-	ScheduleJob(job *Job) error
-	// pass a UTC time string in ISO-8601 format
-	// this returns an entry with the event id and the job
-	GetJobsDueBefore(timeString string) ([]*ScheduleDBEntry, error)
-	// id is the id of the event not the job itself (this table holds past jobs)
-	UpdateJobStatus(id int, status Status) error
-}
-
-// type InMemoryScheduleRepo struct {
-// 	store map[int]*ScheduleDBEntry
-// }
-//
-// func NewInMemoryScheduleRepo() *InMemoryScheduleRepo {
-// 	return &InMemoryScheduleRepo{
-// 		store: make(map[int]*ScheduleDBEntry),
-// 	}
-// }
-//
-// func (s *InMemoryScheduleRepo) ScheduleJob(job *Job) error {
-// 	schedule, err := cron.Parse(job.Cron)
-// 	if err != nil {
-// 		return (err)
-// 	}
-//
-// 	runAt := schedule.Next(time.Now().UTC()) // next run time after current time
-// 	s.store[job.Id] = &ScheduleDBEntry{job, runAt}
-//
-// 	return nil
-// }
-//
-// func (s *InMemoryScheduleRepo) GetJobsDueBefore(timeString string) ([]*Job, error) {
-// 	t, err := time.Parse(APPENV.TimeFormat, timeString)
-// 	if err != nil {
-// 		// TODO handle this error
-// 		return nil, err
-// 	}
-//
-// 	var res []*Job
-// 	for _, j := range s.store {
-// 		if j.runAt.UTC().Before(t.UTC()) {
-// 			res = append(res, j.Job)
-// 		}
-// 	}
-//
-// 	return res, nil
-// }
-
-// CreateJob(job *Job) error
-// GetJobs() ([]*Job, error)
-type SqliteJobRepo struct {
-	store   *sql.DB
-	mu      sync.Mutex
-	cdcChan chan *Job
-}
-
-func NewSqliteJobRepo(db *sql.DB) *SqliteJobRepo {
-	return &SqliteJobRepo{
-		store:   db,
-		mu:      sync.Mutex{},
-		cdcChan: make(chan *Job),
-	}
-}
-
-func (s *SqliteJobRepo) CreateJob(job *Job) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	query := "INSERT INTO jobs (name, cron, retry_limit, type) VALUES (?, ?, ?, ?)"
-	result, err := s.store.Exec(query, job.Name, job.Cron, job.RetryLimit, job.Type)
-	if err != nil {
-		return err
-	}
-
-	id, err := result.LastInsertId()
-	if err != nil {
-		return err
-	}
-
-	job.Id = int(id)
-	s.cdcChan <- job
-
-	return nil
-}
-
-func (s *SqliteJobRepo) GetJobs() ([]*Job, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	rows, err := s.store.Query("SELECT * FROM jobs")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	jobs := []*Job{}
-	for rows.Next() {
-		var job Job
-		if err := rows.Scan(&job.Id, &job.Name, &job.Cron, &job.RetryLimit, &job.Type); err != nil {
-			return nil, err
-		}
-		jobs = append(jobs, &job)
-	}
-
-	return jobs, nil
-}
-
-func (s *SqliteJobRepo) SaveEmailData(data EmailData) error {
-	s.mu.Lock()
-	defer s.mu.Lock()
-
-	query := "INSERT INTO email_job_data (job_id, list_id) VALUES (?, ?)"
-	_, err := s.store.Exec(query, data.JobId, data.ListId)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (s *SqliteJobRepo) GetEmailData(jobId int) (EmailData, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	row := s.store.QueryRow("SELECT * FROM email_job_data WHERE job_id=?", jobId)
-	var emailData EmailData
-	if err := row.Scan(&emailData); err != nil {
-		return emailData, err
-	}
-
-	return emailData, nil
-}
-
-func (s *SqliteJobRepo) Listen() *Job {
-	return <-s.cdcChan
-}
-
-type SqliteScheduleRepo struct {
-	store *sql.DB
-	mu    sync.Mutex
-}
-
-func NewSqliteScheduleRepo(db *sql.DB) *SqliteScheduleRepo {
-	return &SqliteScheduleRepo{
-		store: db,
-		mu:    sync.Mutex{},
-	}
-}
-
-func (s *SqliteScheduleRepo) ScheduleJob(job *Job) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	schedule, err := cron.Parse(job.Cron)
-	if err != nil {
-		return (err)
-	}
-
-	runAt := schedule.Next(time.Now().UTC()).Format(APPENV.TimeFormat) // next run time after current time
-	query := "INSERT INTO scheduling (job_id, run_at, status) VALUES (?, ?, ?)"
-	_, err = s.store.Exec(query, job.Id, runAt, StatusScheduled)
-	if err != nil {
-		return errors.New("Error inserting into table")
-	}
-
-	return nil
-}
-
-func (s *SqliteScheduleRepo) GetJobsDueBefore(timeString string) ([]*ScheduleDBEntry, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	query := "SELECT j.*, s.id AS schedule_id FROM jobs j JOIN scheduling s ON s.job_id=j.id WHERE s.run_at < ? AND s.status = ?"
-	rows, err := s.store.Query(query, timeString, StatusScheduled)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	entries := []*ScheduleDBEntry{}
-	for rows.Next() {
-		var entry ScheduleDBEntry
-		if err := rows.Scan(&entry.Id, &entry.Name, &entry.Cron, &entry.RetryLimit, &entry.Type, &entry.ScheduleId); err != nil {
-			return nil, err
-		}
-		entries = append(entries, &entry)
-	}
-
-	return entries, nil
-}
-
-func (s *SqliteScheduleRepo) UpdateJobStatus(id int, status Status) error {
-	tx, err := s.store.Begin()
-	if err != nil {
-		tx.Rollback()
-		return err
-	}
-
-	query := "UPDATE scheduling SET status = ? WHERE id = ?"
-	stmt, err := tx.Prepare(query)
-	if err != nil {
-		tx.Rollback()
-		return err
-	}
-	defer stmt.Close()
-
-	_, err = stmt.Exec(id, status)
-	if err != nil {
-		tx.Rollback()
-		return err
-	}
-
-	tx.Commit()
-	return nil
-}
-
-type Executor struct {
-	Tick         time.Duration
-	scheduleRepo ScheduleRepo
-	emailRepo    EmailRepo
-}
-
-func NewExecutor(tick time.Duration, db *sql.DB) *Executor {
-	return &Executor{
-		Tick:         tick,
-		scheduleRepo: NewSqliteScheduleRepo(db),
-		emailRepo:    NewSqliteEmailRepo(db),
-	}
-}
-
-func (e *Executor) Start() {
-	ticker := time.NewTicker(e.Tick)
-
-	for {
-		select {
-		case <-ticker.C:
-			e.Poll()
-		}
-	}
-}
-
-func (e *Executor) Poll() {
-	t := time.Now().UTC().Format(APPENV.TimeFormat)
-
-	events, err := e.scheduleRepo.GetJobsDueBefore(t)
-	if err != nil {
-		// TODO properly log this
-		// maybe consider fail threshold and if it passes then send an alert
-		log.Println(err)
-		return
-	}
-
-	log.Printf("%d events found before %s", len(events), t)
-
-	for _, event := range events {
-		go e.Worker(event)
-	}
-}
-
-func (e *Executor) Worker(entry *ScheduleDBEntry) {
-	log.Printf("Doing %s entry %s with id %d retry limit %d", JobTypeToString(entry.Type), entry.Name, entry.Id, entry.RetryLimit)
-
-	runner, err := e.GetRunner(entry.Type)
-	if err != nil {
-		// TODO handle this error
-		log.Printf("Failed to fetch runner for job type %s", JobTypeToString(entry.Type))
-	}
-
-	for i := range entry.RetryLimit {
-		err = runner(&entry.Job)
-		if err != nil {
-			log.Printf("Job with Id %d failed on attempt %d, err: %s", entry.Id, i, err.Error())
-			continue
-		}
-		break
-	}
-
-	if err != nil {
-		// TODO HANDLE THE ERROR RETURNED HERE
-		if err = e.scheduleRepo.UpdateJobStatus(entry.Id, StatusFailed); err != nil {
-			// TODO configure db down alerts
-		}
-	} else {
-		// TODO HANDLE THE ERROR RETURNED HERE
-		if err = e.scheduleRepo.UpdateJobStatus(entry.Id, StatusSuccess); err != nil {
-			// TODO configure db down alerts
-		}
-	}
-}
-
-func SendEmails(to []string, subject string, template string) error {
-	auth := smtp.PlainAuth("", os.Getenv("FROM_EMAIL"), os.Getenv("FROM_EMAIL_PASSWORD"), os.Getenv("FROM_EMAIL_SMTP"))
-
-	headers := "MIME-version: 1.0;\nContent-Type: text/html; charset=\"UTF-8\";"
-	message := "Subject: " + subject + "\n" + headers + "\n\n" + template
-
-	return smtp.SendMail(os.Getenv("SMTP_ADDR"), auth, os.Getenv("FROM_EMAIL"), to, []byte(message))
-}
-
-type JobRunner func(job *Job) error
-
-func (e *Executor) GetRunner(t JobType) (JobRunner, error) {
-	switch t {
-	case TypeCustom:
-		return e.CustomRunner, nil
-	case TypeEmail:
-		return e.EmailRunner, nil
-	case TypeDiscord:
-		return e.DiscordRunner, nil
-	case TypeSlack:
-		return e.SlackRunner, nil
-	}
-
-	return nil, NewError(ERROR_JOB_RUNNER_NOT_FOUND)
-}
-
-func (e *Executor) CustomRunner(entry *Job) error {
-	return nil
-}
-
-func (e *Executor) EmailRunner(job *Job) error {
-	if job.Type != TypeEmail {
-		return NewError(ERROR_JOB_TYPE_MISMATCH, job.Type, TypeEmail)
-	}
-
-	listId, err := e.emailRepo.GetListId(job.Id)
-	if err != nil {
-		return err
-	}
-
-	emailList, err := e.emailRepo.GetEmailList(listId)
-	if err != nil {
-		return err
-	}
-
-	template, err := e.emailRepo.GetTemplate(job.Id)
-	if err != nil {
-		return err
-	}
-
-	// SendEmails(emailList, "Empty Subject", template)
-	for _, email := range emailList {
-		log.Printf("Sending email to %s with template %s", email, template)
-	}
-
-	return nil
-}
-
-func (e *Executor) DiscordRunner(job *Job) error {
-	return nil
-}
-
-func (e *Executor) SlackRunner(job *Job) error {
-	return nil
-}
-
 // TODO split this into seperate read and write groups for better concurrent access
-func NewSqliteDb() *sql.DB {
-	db, err := sql.Open("sqlite3", APPENV.SqlitePath)
+func NewSqliteDb(path string) *sql.DB {
+	db, err := sql.Open("sqlite3", path)
 	if err != nil {
 		panic(err)
 	}
@@ -813,8 +378,8 @@ func NewSqliteDb() *sql.DB {
 }
 
 // returns the 64-bit xxhash digest of x with a zero seed
-func HashXX(x int) uint64 {
-	return xxhash.Sum64String(strconv.Itoa(x))
+func HashXX(x snowflake.ID) uint64 {
+	return xxhash.Sum64String(strconv.FormatInt(int64(x), 10))
 }
 
 // retuns the constructed path of given digest. starts with a /
@@ -825,8 +390,8 @@ func ConstructPath(digest uint64) string {
 }
 
 type TemplateStore interface {
-	SaveTemplate(jobId int, t string) error
-	GetTemplate(jobId int) (string, error)
+	SaveTemplate(jobId snowflake.ID, t string) error
+	GetTemplate(jobId snowflake.ID) (Template, error)
 }
 
 // not using pointers for now since data doesnt need to persist. we will see about this later
@@ -840,7 +405,7 @@ func NewLocalTemplateStore(dir string) LocalTemplateStore {
 	}
 }
 
-func (l LocalTemplateStore) SaveTemplate(jobId int, t string) error {
+func (l LocalTemplateStore) SaveTemplate(jobId snowflake.ID, t string) error {
 	path := fmt.Sprintf("%s/%s", l.dir, ConstructPath(HashXX(jobId)))
 
 	dir := filepath.Dir(path)
@@ -859,7 +424,7 @@ func (l LocalTemplateStore) SaveTemplate(jobId int, t string) error {
 	return nil
 }
 
-func (l LocalTemplateStore) GetTemplate(jobId int) (string, error) {
+func (l LocalTemplateStore) GetTemplate(jobId snowflake.ID) (Template, error) {
 	path := fmt.Sprintf("%s/%s", l.dir, ConstructPath(HashXX(jobId)))
 
 	data, err := os.ReadFile(path)
@@ -867,7 +432,226 @@ func (l LocalTemplateStore) GetTemplate(jobId int) (string, error) {
 		return "", err
 	}
 
-	return string(data), nil
+	return Template(data), nil
+}
+
+type JobEvent struct {
+	Job
+	ScheduleId snowflake.ID
+}
+
+type SchedulingService interface {
+	ScheduleJob(jobId snowflake.ID, cronStr string) error
+	GetJobsDueBefore(timeStamp string) ([]*JobEvent, error)
+	UpdateJobStatus(jobId snowflake.ID, newStatus Status) error
+}
+
+type schedulingService struct {
+	repo SchedulingRepo
+}
+
+func NewSchedulingService(repo SchedulingRepo) *schedulingService {
+	return &schedulingService{
+		repo: repo,
+	}
+}
+
+func (s *schedulingService) ScheduleJob(jobId snowflake.ID, cronStr string) error {
+	schedule, err := cron.Parse(cronStr)
+	if err != nil {
+		return err
+	}
+
+	runAt := schedule.Next(time.Now().UTC()).Format(TIME_FORMAT) // next run time after current time
+	data := NewScheduleData(NewId(), jobId, runAt, StatusScheduled)
+
+	return s.repo.ScheduleEvent(data)
+}
+
+func (s *schedulingService) GetJobsDueBefore(timeStamp string) ([]*JobEvent, error) {
+	if _, err := time.Parse(TIME_FORMAT, timeStamp); err != nil {
+		return nil, err
+	}
+
+	return s.repo.GetJobsDueBefore(timeStamp)
+}
+
+func (s *schedulingService) UpdateJobStatus(jobId snowflake.ID, status Status) error {
+	return s.repo.UpdateJobStatus(jobId, status)
+}
+
+type ScheduleData struct {
+	id     snowflake.ID
+	jobId  snowflake.ID
+	runAt  string
+	status Status
+}
+
+func NewScheduleData(id, jobId snowflake.ID, runAt string, status Status) *ScheduleData {
+	return &ScheduleData{
+		id:     id,
+		jobId:  jobId,
+		runAt:  runAt,
+		status: status,
+	}
+}
+
+type SchedulingRepo interface {
+	ScheduleEvent(event *ScheduleData) error
+	GetJobsDueBefore(timeStamp string) ([]*JobEvent, error)
+	UpdateJobStatus(jobId snowflake.ID, status Status) error
+}
+
+type SqliteSchedulingRepo struct {
+	store *sql.DB
+}
+
+func NewSqliteSchedulingRepo(db *sql.DB) *SqliteSchedulingRepo {
+	return &SqliteSchedulingRepo{
+		store: db,
+	}
+}
+
+func (s SqliteSchedulingRepo) ScheduleEvent(event *ScheduleData) error {
+	query := "INSERT INTO scheduling (id, job_id, run_at, status) VALUES (?, ?, ?, ?)"
+	_, err := s.store.Exec(query, event.id, event.jobId, event.runAt, event.status)
+	if err != nil {
+		return errors.New("Error inserting into table")
+	}
+
+	return nil
+}
+
+func (s SqliteSchedulingRepo) GetJobsDueBefore(timeStamp string) ([]*JobEvent, error) {
+	query := "SELECT j.id, j.name, j.cron, j.retry_limit, j.type, s.id, AS schedule_id FROM jobs j JOIN scheduling s ON s.job_id=j.id WHERE s.run_at < ? AND s.status = ?"
+	rows, err := s.store.Query(query, timeStamp, StatusScheduled)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []*JobEvent
+
+	for rows.Next() {
+		var entry JobEvent
+		if err := rows.Scan(&entry.Id, &entry.Name, &entry.Cron, &entry.RetryLimit, &entry.Type, &entry.ScheduleId); err != nil {
+			return nil, err
+		}
+
+		entries = append(entries, &entry)
+	}
+
+	return entries, nil
+}
+
+func (s SqliteSchedulingRepo) UpdateJobStatus(id snowflake.ID, status Status) error {
+	query := "UPDATE scheduling SET status = ? WHERE job_id = ?"
+	_, err := s.store.Exec(query, status, id)
+
+	// TODO handle the case where multiple rows are updated
+	// should only be one
+	//
+
+	// if res.RowsAffected() != 1 {
+	//
+	//  }
+	return err
+}
+
+// This is the service responsible for polling
+// the scheduling table and shooting off workers
+// for tasks that are due to run. It runs a ticker
+// that polls the scheduler service for overdue jobs,
+// spins up workers and those workers update the
+// job status via the SchedulingService (ex Completed)
+type ExecutorService interface {
+	Start()
+	Poll()
+}
+
+type executorService struct {
+	Tick           time.Duration
+	jobSrvc        JobService
+	emailSrvc      EmailService
+	schedulingSrvc SchedulingService
+}
+
+func NewExecutorService(tick time.Duration, jobSrvc JobService, emailSrvc EmailService, schedulingSrvc SchedulingService) *executorService {
+	return &executorService{
+		Tick:           tick,
+		jobSrvc:        jobSrvc,
+		emailSrvc:      emailSrvc,
+		schedulingSrvc: schedulingSrvc,
+	}
+}
+
+func (e *executorService) Start() {
+	ticker := time.NewTicker(e.Tick)
+
+	for {
+		select {
+		case <-ticker.C:
+			e.Poll()
+		}
+	}
+}
+
+func (e *executorService) Poll() {
+	time := time.Now().UTC().Format(TIME_FORMAT)
+
+	jobEvents, err := e.schedulingSrvc.GetJobsDueBefore(time)
+	if err != nil {
+		// TODO handle this this error
+		// TODO this gets a double todo because it's important
+		log.Println(NewError("Error during executor polling: %e", err))
+		return
+	}
+
+	for _, event := range jobEvents {
+		log.Println("Working Job %d", event.ScheduleId)
+	}
+}
+
+// Not sure about the arguments.
+// Could optimize this by passing a whole
+// job for the worker to use instead of
+// making an extra call to the job service
+type WorkerQue interface {
+	Enque(e *JobEvent)
+	Deque() *JobEvent
+}
+
+type LocalWorkerQue struct{}
+
+var (
+	ERROR_INVALID_RETRY_LIMIT   = "Error invalid retry limit"
+	ERROR_JOB_TYPE_INVALID      = "Error invalid job type"
+	ERROR_JOB_NAME_NOT_PROVIDED = "Error job name not provided"
+	ERROR_JOB_RUNNER_NOT_FOUND  = "Error associated job runner not found"
+	ERROR_JOB_TYPE_MISMATCH     = "Error runner and job type mismatch. Got %d expected %d"
+	ERROR_JOB_FAILED            = "Error job failed"
+	ERROR_JOB_STATUS_INVALID    = "Error job status invalid"
+)
+
+func NewError(template string, args ...any) error {
+	if countFormats(template) != len(args) {
+		return errors.New("Error: No information available - error generating message")
+	}
+	return errors.New(fmt.Sprintf(template, args...))
+}
+
+var FORMAT_REGEX = regexp.MustCompile(`%[dfsuXxobegt]`)
+
+func countFormats(format string) int {
+	return len(FORMAT_REGEX.FindAllString(format, -1))
+}
+
+func Assert(statement string, conditions ...bool) {
+	for _, condition := range conditions {
+		if !condition {
+			panic(statement)
+		}
+	}
 }
 
 var ALLOWED_TAGS = map[string]bool{
@@ -915,18 +699,53 @@ func SanitizeTemplate(t string) string {
 
 func main() {
 	godotenv.Load()
-	sqlite3db := NewSqliteDb()
+
+	TIME_FORMAT = os.Getenv("TIME_FORMAT")
+	Assert("Time format must me set", len(TIME_FORMAT) > 0, TIME_FORMAT == os.Getenv("TIME_FORMAT"))
+
+	nodeStr := os.Getenv("NODE_ID")
+	node, err := strconv.ParseInt(nodeStr, 10, 64)
+	if err != nil {
+		panic("Couldn't initialize snowflake id node")
+	}
+
+	if err := Init(node); err != nil {
+		log.Panicf("Error initializing snowflake node %s", err)
+	}
+
+	sqlite3db := NewSqliteDb(os.Getenv("SQLITE_DB_PATH"))
+
+	emailRepo := NewSqliteEmailRepo(sqlite3db)
+	templateStore := NewLocalTemplateStore(os.Getenv("TEMPLATE_DIR"))
+	emailSrvc := NewEmailService(emailRepo, templateStore)
 
 	jobRepo := NewSqliteJobRepo(sqlite3db)
-	scheduleRepo := NewSqliteScheduleRepo(sqlite3db)
+	jobSrvc := NewJobService(jobRepo)
 
-	scheduler := NewScheduler(jobRepo, scheduleRepo)
-	go scheduler.Start()
+	// j := NewJob("test job", "* * * * * *", 3, TypeEmail)
+	// jobSrvc.CreateJob(j)
+	//
+	// e := &EmailData{
+	// 	JobId:  j.Id,
+	// 	ListId: 1,
+	// }
+	//
+	// emailSrvc.CreateEmailJob(e)
 
-	executor := NewExecutor(APPENV.Duration, sqlite3db)
-	go executor.Start()
+	schedulingRepo := NewSqliteSchedulingRepo(sqlite3db)
+	schedulingSrvc := NewSchedulingService(schedulingRepo)
 
-	server := NewServer(jobRepo, ":8080")
+	// if err := schedulingService.ScheduleJob(j.Id, j.Cron); err != nil {
+	// 	log.Println(err)
+	// }
 
-	log.Println(server.Start())
+	tick, err := time.ParseDuration(os.Getenv("TICK"))
+	if err != nil {
+		panic(err)
+	}
+
+	executorSrvc := NewExecutorService(tick, jobSrvc, emailSrvc, schedulingSrvc)
+	executorSrvc.Start()
+
+	select {}
 }
