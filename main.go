@@ -7,19 +7,18 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/Craig-Turley/task-scheduler.git/pkg/idgen"
+	"github.com/Craig-Turley/task-scheduler.git/pkg/utils"
 	"github.com/bwmarrin/snowflake"
 	"github.com/cespare/xxhash/v2"
 	"github.com/joho/godotenv"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/robfig/cron"
 )
-
-var TIME_FORMAT string
 
 type Status uint8
 
@@ -65,18 +64,6 @@ func JobTypeToString(t JobType) string {
 	return "not found"
 }
 
-var sf *snowflake.Node
-
-func Init(node int64) error {
-	var err error
-	sf, err = snowflake.NewNode(node)
-	return err
-}
-
-func NewId() snowflake.ID {
-	return sf.Generate()
-}
-
 type Job struct {
 	Id         snowflake.ID `json:"job_id"`
 	Name       string       `json:"name"`
@@ -97,15 +84,15 @@ func NewJob(name, cron string, retryLimit int, jobType JobType) *Job {
 // Validates the job fields provided
 func (j *Job) Validate() error {
 	if len(j.Name) == 0 {
-		return NewError(ERROR_JOB_NAME_NOT_PROVIDED)
+		return utils.NewError(utils.ERROR_JOB_NAME_NOT_PROVIDED)
 	}
 
 	if ok := j.Type.Valid(); !ok {
-		return NewError(ERROR_JOB_TYPE_INVALID)
+		return utils.NewError(utils.ERROR_JOB_TYPE_INVALID)
 	}
 
 	if j.RetryLimit <= 0 {
-		return NewError(ERROR_INVALID_RETRY_LIMIT)
+		return utils.NewError(utils.ERROR_INVALID_RETRY_LIMIT)
 	}
 
 	return nil
@@ -137,7 +124,7 @@ func (s *jobService) CreateJob(job *Job) error {
 		return err
 	}
 
-	job.Id = NewId()
+	job.Id = idgen.NewId()
 	if err := s.repo.CreateJob(job); err != nil {
 		return err
 	}
@@ -462,14 +449,14 @@ func (s *schedulingService) ScheduleJob(jobId snowflake.ID, cronStr string) erro
 		return err
 	}
 
-	runAt := schedule.Next(time.Now().UTC()).Format(TIME_FORMAT) // next run time after current time
-	data := NewScheduleData(NewId(), jobId, runAt, StatusScheduled)
+	runAt := schedule.Next(time.Now().UTC()).Format(utils.TIME_FORMAT) // next run time after current time
+	data := NewScheduleData(idgen.NewId(), jobId, runAt, StatusScheduled)
 
 	return s.repo.ScheduleEvent(data)
 }
 
 func (s *schedulingService) GetJobsDueBefore(timeStamp string) ([]*JobEvent, error) {
-	if _, err := time.Parse(TIME_FORMAT, timeStamp); err != nil {
+	if _, err := time.Parse(utils.TIME_FORMAT, timeStamp); err != nil {
 		return nil, err
 	}
 
@@ -597,13 +584,13 @@ func (e *executorService) Start() {
 }
 
 func (e *executorService) Poll() {
-	time := time.Now().UTC().Format(TIME_FORMAT)
+	time := time.Now().UTC().Format(utils.TIME_FORMAT)
 
 	jobEvents, err := e.schedulingSrvc.GetJobsDueBefore(time)
 	if err != nil {
 		// TODO handle this this error
 		// TODO this gets a double todo because it's important
-		log.Println(NewError("Error during executor polling: %e", err))
+		log.Println(utils.NewError("Error during executor polling: %e", err))
 		return
 	}
 
@@ -622,37 +609,6 @@ type WorkerQue interface {
 }
 
 type LocalWorkerQue struct{}
-
-var (
-	ERROR_INVALID_RETRY_LIMIT   = "Error invalid retry limit"
-	ERROR_JOB_TYPE_INVALID      = "Error invalid job type"
-	ERROR_JOB_NAME_NOT_PROVIDED = "Error job name not provided"
-	ERROR_JOB_RUNNER_NOT_FOUND  = "Error associated job runner not found"
-	ERROR_JOB_TYPE_MISMATCH     = "Error runner and job type mismatch. Got %d expected %d"
-	ERROR_JOB_FAILED            = "Error job failed"
-	ERROR_JOB_STATUS_INVALID    = "Error job status invalid"
-)
-
-func NewError(template string, args ...any) error {
-	if countFormats(template) != len(args) {
-		return errors.New("Error: No information available - error generating message")
-	}
-	return errors.New(fmt.Sprintf(template, args...))
-}
-
-var FORMAT_REGEX = regexp.MustCompile(`%[dfsuXxobegt]`)
-
-func countFormats(format string) int {
-	return len(FORMAT_REGEX.FindAllString(format, -1))
-}
-
-func Assert(statement string, conditions ...bool) {
-	for _, condition := range conditions {
-		if !condition {
-			panic(statement)
-		}
-	}
-}
 
 var ALLOWED_TAGS = map[string]bool{
 	"html":   true,
@@ -700,8 +656,7 @@ func SanitizeTemplate(t string) string {
 func main() {
 	godotenv.Load()
 
-	TIME_FORMAT = os.Getenv("TIME_FORMAT")
-	Assert("Time format must me set", len(TIME_FORMAT) > 0, TIME_FORMAT == os.Getenv("TIME_FORMAT"))
+	utils.Assert("Time format must me set", len(utils.TIME_FORMAT) > 0, utils.TIME_FORMAT == os.Getenv("TIME_FORMAT"))
 
 	nodeStr := os.Getenv("NODE_ID")
 	node, err := strconv.ParseInt(nodeStr, 10, 64)
@@ -709,7 +664,7 @@ func main() {
 		panic("Couldn't initialize snowflake id node")
 	}
 
-	if err := Init(node); err != nil {
+	if err := idgen.Init(node); err != nil {
 		log.Panicf("Error initializing snowflake node %s", err)
 	}
 
