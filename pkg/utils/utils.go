@@ -33,9 +33,9 @@ func countFormats(format string) int {
 }
 
 func Assert(statement string, conditions ...bool) {
-	for _, condition := range conditions {
+	for i, condition := range conditions {
 		if !condition {
-			panic(statement)
+			panic(fmt.Sprintf("Assert failed: %s (condition #%d)", statement, i+1))
 		}
 	}
 }
