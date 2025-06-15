@@ -19,6 +19,13 @@ type LocalWorkerService struct {
 	emailSrvc      EmailService
 }
 
+func NewLocalWorkerService(schedulingSrvc SchedulingService, emailSrvc EmailService) *LocalWorkerService {
+	return &LocalWorkerService{
+		schedulingSrvc: schedulingSrvc,
+		emailSrvc:      emailSrvc,
+	}
+}
+
 func (w *LocalWorkerService) getRunner(t job.JobType) (Runner, error) {
 	switch t {
 	case job.TypeEmail:
@@ -49,7 +56,7 @@ func (w *LocalWorkerService) worker(e *job.JobEvent) {
 	// run job
 	retry := e.RetryLimit
 	for {
-		err := runner(&e.Job)
+		err = runner(&e.Job)
 		if err == nil || retry == 0 {
 			break
 		}
@@ -57,23 +64,26 @@ func (w *LocalWorkerService) worker(e *job.JobEvent) {
 		retry--
 	}
 
-	var status schedule.Status
+	// TODO fix the below error handling (Update returns an error)
 	if err != nil {
-		log.Println(err)
-		status = schedule.StatusFailed
-	} else {
-		status = schedule.StatusSuccess
+		log.Printf("Failed on ScheduleId %s: %s", e.ScheduleId, err)
+		w.schedulingSrvc.UpdateJobStatus(e.ScheduleId, schedule.StatusFailed)
+		return
 	}
 
 	// TODO return error
 	// update status
-	if err := w.schedulingSrvc.UpdateJobStatus(e.ScheduleId, status); err != nil {
-		log.Println(err)
+	if err = w.schedulingSrvc.UpdateJobStatus(e.ScheduleId, schedule.StatusSuccess); err != nil {
+		log.Printf("Failed on ScheduleId %s: %s", e.ScheduleId, err)
+		return
 	}
 
-	if err := w.schedulingSrvc.ScheduleJob(e.Id, e.Cron); err != nil {
-		log.Println(err)
+	if err = w.schedulingSrvc.ScheduleJob(e.Id, e.Cron); err != nil {
+		log.Printf("Failed on ScheduleId %s: %s", e.ScheduleId, err)
+		return
 	}
+
+	log.Printf("ScheduleId %d success", e.ScheduleId)
 }
 
 func (w *LocalWorkerService) runEmail(e *job.Job) error {

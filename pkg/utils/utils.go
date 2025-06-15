@@ -3,11 +3,10 @@ package utils
 import (
 	"errors"
 	"fmt"
-	"os"
 	"regexp"
 )
 
-var TIME_FORMAT = os.Getenv("TIME_FORMAT")
+var TIME_FORMAT = "2006-01-02 15:04:05"
 
 var (
 	ERROR_INVALID_RETRY_LIMIT   = "Error invalid retry limit"

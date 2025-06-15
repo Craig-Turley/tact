@@ -23,14 +23,22 @@ type executorService struct {
 	jobSrvc        JobService
 	emailSrvc      EmailService
 	schedulingSrvc SchedulingService
+	workerSrvc     WorkerService
 }
 
-func NewExecutorService(tick time.Duration, jobSrvc JobService, emailSrvc EmailService, schedulingSrvc SchedulingService) *executorService {
+func NewExecutorService(
+	tick time.Duration,
+	jobSrvc JobService,
+	emailSrvc EmailService,
+	schedulingSrvc SchedulingService,
+	workerSrvc WorkerService,
+) *executorService {
 	return &executorService{
 		Tick:           tick,
 		jobSrvc:        jobSrvc,
 		emailSrvc:      emailSrvc,
 		schedulingSrvc: schedulingSrvc,
+		workerSrvc:     workerSrvc,
 	}
 }
 
@@ -57,6 +65,6 @@ func (e *executorService) Poll() {
 	}
 
 	for _, event := range jobEvents {
-		log.Println("Working Job %d", event.ScheduleId)
+		e.workerSrvc.Enque(event)
 	}
 }

@@ -37,7 +37,7 @@ func (s SqliteSchedulingRepo) ScheduleEvent(event *schedule.ScheduleData) error 
 }
 
 func (s SqliteSchedulingRepo) GetJobsDueBefore(timeStamp string) ([]*job.JobEvent, error) {
-	query := "SELECT j.id, j.name, j.cron, j.retry_limit, j.type, s.id, AS schedule_id FROM jobs j JOIN scheduling s ON s.job_id=j.id WHERE s.run_at < ? AND s.status = ?"
+	query := "SELECT j.id, j.name, j.cron, j.retry_limit, j.type, s.id AS schedule_id FROM jobs j JOIN scheduling s ON s.job_id=j.id WHERE s.run_at < ? AND s.status = ?"
 	rows, err := s.store.Query(query, timeStamp, schedule.StatusScheduled)
 	if err != nil {
 		return nil, err
