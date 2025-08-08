@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 
+	//"github.com/joho/godotenv"
 	"github.com/Craig-Turley/task-scheduler.git/internal/api"
 )
 
@@ -59,6 +60,7 @@ import (
 // }
 
 func main() {
+	///godotenv.Load()
 	server := api.NewServer(":8080")
 
 	log.Println(server.Run())

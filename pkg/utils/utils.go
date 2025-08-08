@@ -22,7 +22,7 @@ func NewError(template string, args ...any) error {
 	if countFormats(template) != len(args) {
 		return errors.New("Error: No information available - error generating message")
 	}
-	return errors.New(fmt.Sprintf(template, args...))
+	return fmt.Errorf(fmt.Sprintf(template, args...))
 }
 
 var FORMAT_REGEX = regexp.MustCompile(`%[dfsuXxobegt]`)
