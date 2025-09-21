@@ -1,51 +1,50 @@
 package repos
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
-	"sync"
 
 	"github.com/Craig-Turley/task-scheduler.git/pkg/common/email"
 	"github.com/Craig-Turley/task-scheduler.git/pkg/common/template"
+	"github.com/Craig-Turley/task-scheduler.git/pkg/utils"
 	"github.com/bwmarrin/snowflake"
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// Using this as a type alias for an email string
-// possibly might move this later
-
 // TODO add context support
 type EmailRepo interface {
-	SaveEmailData(data *email.EmailData) error
-	GetEmailData(jobId snowflake.ID) (*email.EmailData, error)
-	GetEmailList(listId snowflake.ID) ([]email.Email, error)
+	SaveEmailData(ctx context.Context, emailData *email.EmailData) error
+	GetEmailData(ctx context.Context, jobId snowflake.ID) (*email.EmailData, error)
+	CreateEmailList(ctx context.Context, listData *email.EmailListData) (snowflake.ID, error)
+	GetEmailListSubscribers(ctx context.Context, listId snowflake.ID) ([]*email.SubscriberInformation, error)
+	GetEmailListData(ctx context.Context, listId snowflake.ID) (*email.EmailListData, error)
+	AddToEmailList(ctx context.Context, listId snowflake.ID, subs []*email.SubscriberInformation) ([]*email.SubscriberInformation, error) 
 }
 
 // TODO add context support
 type SqliteEmailRepo struct {
 	store         *sql.DB
 	templateStore TemplateStore
-	mu            sync.Mutex
 }
 
 func NewSqliteEmailRepo(db *sql.DB) *SqliteEmailRepo {
 	return &SqliteEmailRepo{
 		store:         db,
 		templateStore: NewLocalTemplateStore(os.Getenv("TEMPLATE_DIR")),
-		mu:            sync.Mutex{},
 	}
 }
 
-func (s *SqliteEmailRepo) SaveEmailData(data *email.EmailData) error {
+func (s *SqliteEmailRepo) SaveEmailData(ctx context.Context, data *email.EmailData) error {
 	query := "INSERT INTO email_job_data (job_id, list_id) VALUES (?, ?)"
-	_, err := s.store.Exec(query, data.JobId, data.ListId)
+	_, err := s.store.ExecContext(ctx, query, data.JobId, data.ListId)
 	return err
 }
 
-func (s *SqliteEmailRepo) GetEmailData(jobId snowflake.ID) (*email.EmailData, error) {
+func (s *SqliteEmailRepo) GetEmailData(ctx context.Context, jobId snowflake.ID) (*email.EmailData, error) {
 	var emailData email.EmailData
-	row := s.store.QueryRow("SELECT * FROM email_job_data WHERE job_id = ?", jobId)
+	row := s.store.QueryRowContext(ctx, "SELECT * FROM email_job_data WHERE job_id = ?", jobId)
 	if row.Err() != nil {
 		return nil, row.Err()
 	}
@@ -58,57 +57,102 @@ func (s *SqliteEmailRepo) GetEmailData(jobId snowflake.ID) (*email.EmailData, er
 	return &emailData, err
 }
 
-//
-// func (s *SqliteEmailRepo) GetListId(jobId int) (int, error) {
-// 	s.mu.Lock()
-// 	defer s.mu.Unlock()
-//
-// 	query := `SELECT list_id FROM email_job_data WHERE job_id=?`
-//
-// 	row := s.store.QueryRow(query, jobId)
-// 	var listId int
-// 	if err := row.Scan(&listId); err != nil {
-// 		return -1, err
-// 	}
-//
-// 	return listId, nil
-// }
+// keeping this here just incase i ever decide to go back to the email_addresses, email_lists, email_subscriptions db model
+	// query := `
+ //    SELECT ea.email
+ //    FROM email_addresses AS ea
+ //    JOIN subscriptions AS s ON s.email_address_id = ea.id
+ //    WHERE s.email_list_id = ?;
+ //  `
 
-func (s *SqliteEmailRepo) GetEmailList(listId snowflake.ID) ([]email.Email, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *SqliteEmailRepo) CreateEmailList(ctx context.Context, data *email.EmailListData) (snowflake.ID, error) {
+	if (utils.ValidEmailListName(data.Name) == false) {
+		return -1, utils.NewError("Error: Invalid list name")
+	}
 
 	query := `
-    SELECT ea.email
-    FROM email_addresses AS ea
-    JOIN subscriptions AS s ON s.email_address_id = ea.id
-    WHERE s.email_list_id = ?;
-  `
+		INSERT INTO email_lists (id, name)
+		VALUES (?, ?)
+	`
+	_, err := s.store.ExecContext(ctx, query, data.ListId, data.Name)
+	return data.ListId, err
+}
 
-	rows, err := s.store.Query(query, listId)
+func (s *SqliteEmailRepo) GetEmailListSubscribers(ctx context.Context, listId snowflake.ID) ([]*email.SubscriberInformation, error) {
+	query := `
+		SELECT id, email, first_name, last_name, list_id, is_subscribed 
+		FROM subscribers AS s
+		WHERE s.list_id = ? 
+		AND is_subscribed = 1
+	`
+
+	rows, err := s.store.QueryContext(ctx, query, listId)
 	if err != nil {
 		return nil, fmt.Errorf("query failed: %w", err)
 	}
 	defer rows.Close()
 
-	var emails []email.Email
+	var subscribers []*email.SubscriberInformation
 	for rows.Next() {
-		var e string
-		if err = rows.Scan(&e); err != nil {
+		var sub email.SubscriberInformation 
+		if err := rows.Scan(&sub.Id, &sub.Email, &sub.FirstName, &sub.LastName, &sub.ListId, &sub.IsSubscribed); err != nil {
 			return nil, fmt.Errorf("row scan failed: %w", err)
 		}
-		emails = append(emails, email.Email(e))
+		subscribers = append(subscribers, &sub)
 	}
 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 
-	return emails, nil
+	return subscribers, nil
+}
+
+func (s *SqliteEmailRepo) GetEmailListData(ctx context.Context, listId snowflake.ID) (*email.EmailListData, error) {
+	query := `
+		SELECT id, name FROM email_lists AS el
+		WHERE el.id = ?
+	`
+
+	row := s.store.QueryRowContext(ctx, query, listId)
+	if row.Err() != nil {
+		return nil, row.Err()	
+	}
+
+	var listData email.EmailListData
+	if err := row.Scan(&listData.ListId, &listData.Name); err != nil {
+		return nil, err
+	}
+
+	return &listData, nil
+}
+
+func (s* SqliteEmailRepo) AddToEmailList(ctx context.Context, listId snowflake.ID, subs []*email.SubscriberInformation) ([]*email.SubscriberInformation, error) {
+	query := `
+		INSERT INTO subscribers
+		(id, email, first_name, last_name, list_id, is_subscribed)
+		VALUES
+		(?, ?, ?, ?, ?, ?)
+	`
+
+	failed := []*email.SubscriberInformation{}
+	var err error
+	for _, sub := range subs {
+		_, err = s.store.ExecContext(ctx, query, sub.Id, sub.Email, sub.FirstName, sub.LastName, sub.ListId, sub.IsSubscribed)
+		if err != nil {
+			failed = append(failed, sub)
+		}
+	}
+
+	if err != nil {
+		err = utils.NewError("failed to insert %d subscribers for listId %d", len(subs), listId)
+	}
+
+	return failed, err     
 }
 
 // TODO fix this
-func (s *SqliteEmailRepo) GetTemplate(jobId snowflake.ID) (template.Template, error) {
+func (s *SqliteEmailRepo) GetTemplate(ctx context.Context, jobId snowflake.ID) (template.Template, error) {
 	// s.mu.Lock()
 	// defer s.mu.Unlock()
 	//
@@ -125,5 +169,5 @@ func (s *SqliteEmailRepo) GetTemplate(jobId snowflake.ID) (template.Template, er
 	// }
 	//
 	// return string(template), nil
-	return s.templateStore.GetTemplate(jobId)
+	return s.templateStore.GetTemplate(ctx, jobId)
 }

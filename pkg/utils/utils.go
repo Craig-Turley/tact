@@ -1,12 +1,14 @@
 package utils
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
+	"time"
 )
 
-var TIME_FORMAT = "2006-01-02 15:04:05"
+var TIME_FORMAT = time.RFC3339
 
 var (
 	ERROR_INVALID_RETRY_LIMIT   = "Error invalid retry limit"
@@ -37,4 +39,22 @@ func Assert(statement string, conditions ...bool) {
 			panic(fmt.Sprintf("Assert failed: %s (condition #%d)", statement, i+1))
 		}
 	}
+}
+
+func ValidEmailListName(name string) bool {
+	return true
+}
+
+func MergeJson(json1, json2 []byte) []byte {
+	var m1, m2 map[string]any
+	
+	json.Unmarshal(json1, &m1)
+	json.Unmarshal(json2, &m2)
+
+	for k, v := range m2 {
+		m1[k] = v
+	}
+
+	mergedJson, _ := json.MarshalIndent(m1, "", " ")
+	return mergedJson
 }

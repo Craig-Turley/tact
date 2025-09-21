@@ -41,15 +41,13 @@ func JobTypeToString(t JobType) string {
 type Job struct {
 	Id         snowflake.ID `json:"job_id"`
 	Name       string       `json:"name"`
-	Cron       string       `json:"cron"`
 	RetryLimit int          `json:"retry_limit"`
 	Type       JobType      `json:"job_type"`
 }
 
-func NewJob(name, cron string, retryLimit int, jobType JobType) *Job {
+func NewJob(name string, retryLimit int, jobType JobType) *Job {
 	return &Job{
 		Name:       name,
-		Cron:       cron,
 		RetryLimit: retryLimit,
 		Type:       jobType,
 	}

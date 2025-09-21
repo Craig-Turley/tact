@@ -1,6 +1,7 @@
 package repos
 
 import (
+	"context"
 	"database/sql"
 	"sync"
 
@@ -10,8 +11,8 @@ import (
 )
 
 type JobRepo interface {
-	CreateJob(job *job.Job) error
-	GetJob(id snowflake.ID) (*job.Job, error)
+	CreateJob(ctx context.Context, job *job.Job) (*job.Job, error)
+	GetJob(ctx context.Context, id snowflake.ID) (*job.Job, error)
 }
 
 type SqliteJobRepo struct {
@@ -29,37 +30,31 @@ func NewSqliteJobRepo(db *sql.DB) *SqliteJobRepo {
 }
 
 // CreateJob sets the id of the job passed in from autoincrementing table and returns an erro
-func (s *SqliteJobRepo) CreateJob(job *job.Job) error {
+func (s *SqliteJobRepo) CreateJob(ctx context.Context, job *job.Job) (*job.Job, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	query := "INSERT INTO jobs (id, name, cron, retry_limit, type) VALUES (?, ?, ?, ?, ?)"
-	_, err := s.store.Exec(query, job.Id, job.Name, job.Cron, job.RetryLimit, job.Type)
+	query := "INSERT INTO jobs (id, name, retry_limit, type) VALUES (?, ?, ?, ?)"
+	_, err := s.store.ExecContext(ctx, query, job.Id, job.Name, job.RetryLimit, job.Type)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	// again, this is an optimization for approxomatley 0 users
-	// and if this deadlocks...we're screwed
-	// deadlock counter: 2
-	// "why do I even have this?" counter: 2
-	// s.cdcChan <- job
-
-	return nil
+	return job, nil
 }
 
 // ahh yes, when this has a lot of history than say goodbye to your memory
-func (s *SqliteJobRepo) GetJob(id snowflake.ID) (*job.Job, error) {
+func (s *SqliteJobRepo) GetJob(ctx context.Context, id snowflake.ID) (*job.Job, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	row := s.store.QueryRow("SELECT * FROM jobs WHERE id=?", id)
+	row := s.store.QueryRowContext(ctx, "SELECT * FROM jobs WHERE id=?", id)
 	if err := row.Err(); err != nil {
 		return nil, err
 	}
 
 	var job job.Job
-	if err := row.Scan(&job.Id, &job.Name, &job.Cron, &job.RetryLimit, &job.Type); err != nil {
+	if err := row.Scan(&job.Id, &job.Name, &job.RetryLimit, &job.Type); err != nil {
 		return nil, err
 	}
 

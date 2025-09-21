@@ -9,12 +9,11 @@ import (
 	"github.com/Craig-Turley/task-scheduler.git/pkg/idgen"
 	"github.com/Craig-Turley/task-scheduler.git/pkg/utils"
 	"github.com/bwmarrin/snowflake"
-	"github.com/robfig/cron"
 )
 
 type SchedulingService interface {
-	ScheduleJob(jobId snowflake.ID, cronStr string) error
-	GetJobsDueBefore(timeStamp string) ([]*job.JobEvent, error)
+	ScheduleJob(jobId snowflake.ID, iso string) error
+	GetJobsDueBefore(iso string) ([]*job.JobEvent, error)
 	UpdateJobStatus(schedulingId snowflake.ID, newStatus schedule.Status) error
 }
 
@@ -28,24 +27,30 @@ func NewSchedulingService(repo repos.SchedulingRepo) *schedulingService {
 	}
 }
 
-func (s *schedulingService) ScheduleJob(jobId snowflake.ID, cronStr string) error {
-	sched, err := cron.Parse(cronStr)
+// TODO fix the scheduling from cron to iso 
+func (s *schedulingService) ScheduleJob(jobId snowflake.ID, iso string) error {
+	t, err := time.Parse(time.RFC3339, iso); 
 	if err != nil {
-		return err
+		return utils.NewError("Error parsing iso string %s", iso) 
 	}
 
-	runAt := sched.Next(time.Now().UTC()).Format(utils.TIME_FORMAT) // next run time after current time
-	data := schedule.NewScheduleData(idgen.NewId(), jobId, runAt, schedule.StatusScheduled)
+	// give it a buffer of an hour since the iso will always be before the current time
+	if t.Before(time.Now().Add(time.Hour * -1).UTC()) {
+		return utils.NewError("Error attempting to schedule a job in the past")
+	}
+		
+	data := schedule.NewScheduleData(idgen.NewId(), jobId, iso, schedule.StatusScheduled)
 
 	return s.repo.ScheduleEvent(data)
 }
 
-func (s *schedulingService) GetJobsDueBefore(timeStamp string) ([]*job.JobEvent, error) {
-	if _, err := time.Parse(utils.TIME_FORMAT, timeStamp); err != nil {
+// TODO test this
+func (s *schedulingService) GetJobsDueBefore(iso string) ([]*job.JobEvent, error) {
+	if _, err := time.Parse(utils.TIME_FORMAT, iso); err != nil {
 		return nil, err
 	}
 
-	return s.repo.GetJobsDueBefore(timeStamp)
+	return s.repo.GetJobsDueBefore(iso)
 }
 
 func (s *schedulingService) UpdateJobStatus(schedulingId snowflake.ID, status schedule.Status) error {

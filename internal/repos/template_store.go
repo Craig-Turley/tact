@@ -1,6 +1,7 @@
 package repos
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,14 +19,14 @@ func HashXX(x snowflake.ID) uint64 {
 
 // retuns the constructed path of given digest. starts with a /
 func ConstructPath(digest uint64) string {
-	hash := fmt.Sprintf("%x", digest)
-	path := fmt.Sprintf("%s/%s/%s.html", hash[0:4], hash[4:8], hash[8:16])
+	hash := fmt.Sprintf("%016x", digest)
+	path := fmt.Sprintf("%s/%s/%s.html", hash[0:4], hash[4:8], hash[8:])
 	return path
 }
 
 type TemplateStore interface {
-	SaveTemplate(jobId snowflake.ID, t string) error
-	GetTemplate(jobId snowflake.ID) (template.Template, error)
+	SaveTemplate(ctx context.Context, jobId snowflake.ID, t string) error
+	GetTemplate(ctx context.Context, jobId snowflake.ID) (template.Template, error)
 }
 
 // not using pointers for now since data doesnt need to persist. we will see about this later
@@ -39,7 +40,7 @@ func NewLocalTemplateStore(dir string) LocalTemplateStore {
 	}
 }
 
-func (l LocalTemplateStore) SaveTemplate(jobId snowflake.ID, t string) error {
+func (l LocalTemplateStore) SaveTemplate(ctx context.Context, jobId snowflake.ID, t string) error {
 	path := fmt.Sprintf("%s/%s", l.dir, ConstructPath(HashXX(jobId)))
 
 	dir := filepath.Dir(path)
@@ -58,7 +59,7 @@ func (l LocalTemplateStore) SaveTemplate(jobId snowflake.ID, t string) error {
 	return nil
 }
 
-func (l LocalTemplateStore) GetTemplate(jobId snowflake.ID) (template.Template, error) {
+func (l LocalTemplateStore) GetTemplate(ctx context.Context, jobId snowflake.ID) (template.Template, error) {
 	path := fmt.Sprintf("%s/%s", l.dir, ConstructPath(HashXX(jobId)))
 
 	data, err := os.ReadFile(path)

@@ -1,17 +1,18 @@
 package services
 
 import (
+	"context"
+
 	"github.com/Craig-Turley/task-scheduler.git/internal/repos"
 	"github.com/Craig-Turley/task-scheduler.git/pkg/common/job"
 	"github.com/Craig-Turley/task-scheduler.git/pkg/idgen"
 	"github.com/bwmarrin/snowflake"
-	"github.com/robfig/cron"
 )
 
 type JobService interface {
 	// pass just the job the scheduler will take care of finding its next occurence
-	CreateJob(job *job.Job) error
-	GetJob(id snowflake.ID) (*job.Job, error)
+	CreateJob(ctx context.Context, job *job.Job) (*job.Job, error)
+	GetJob(ctx context.Context, id snowflake.ID) (*job.Job, error)
 }
 
 type jobService struct {
@@ -24,24 +25,15 @@ func NewJobService(repo repos.JobRepo) *jobService {
 	return &jobService{repo: repo}
 }
 
-func (s *jobService) CreateJob(job *job.Job) error {
+func (s *jobService) CreateJob(ctx context.Context, job *job.Job) (*job.Job, error) {
 	if err := job.Validate(); err != nil {
-		return err
-	}
-
-	_, err := cron.Parse(job.Cron)
-	if err != nil {
-		return err
+		return nil, err
 	}
 
 	job.Id = idgen.NewId()
-	if err := s.repo.CreateJob(job); err != nil {
-		return err
-	}
-
-	return nil
+	return s.repo.CreateJob(ctx, job)
 }
 
-func (s *jobService) GetJob(id snowflake.ID) (*job.Job, error) {
-	return s.repo.GetJob(id)
+func (s *jobService) GetJob(ctx context.Context, id snowflake.ID) (*job.Job, error) {
+	return s.repo.GetJob(ctx, id)
 }

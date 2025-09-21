@@ -15,3 +15,42 @@ func NewEmailData(jobId, listId snowflake.ID) *EmailData {
 		ListId: listId,
 	}
 }
+
+type SubscriberInformation struct {
+	Id 					 snowflake.ID
+	FirstName 	 string
+	LastName 		 string
+	Email				 Email
+	ListId 			 snowflake.ID
+	IsSubscribed bool
+}
+
+func NewSubscriberInformation(
+	id 					 snowflake.ID,
+	firstName 	 string,
+	lastName 		 string,
+	email 			 Email,
+	listId 			 snowflake.ID,
+	isSubscribed bool,
+) *SubscriberInformation {
+	return &SubscriberInformation{
+		Id: 					id,
+		FirstName: 		firstName,
+		LastName: 		lastName,
+		Email: 				email,
+		ListId: 		  listId,
+		IsSubscribed: isSubscribed,
+	}
+}
+
+type EmailListData struct {
+	ListId	 snowflake.ID `json:"list_id"`
+	Name string				`json:"name"` 
+}
+
+func NewEmailListData(listId snowflake.ID, name string) *EmailListData {
+	return &EmailListData{
+		ListId: listId,
+		Name: 	name,
+	}
+}

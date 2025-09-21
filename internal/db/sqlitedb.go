@@ -1,6 +1,8 @@
 package db
 
-import "database/sql"
+import (
+	"database/sql"
+)
 
 func NewSqliteDb(path string) *sql.DB {
 	db, err := sql.Open("sqlite3", path)

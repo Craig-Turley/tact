@@ -1,7 +1,9 @@
 package services
 
 import (
+	"context"
 	"log"
+	"time"
 
 	"github.com/Craig-Turley/task-scheduler.git/pkg/common/job"
 	"github.com/Craig-Turley/task-scheduler.git/pkg/common/schedule"
@@ -78,27 +80,33 @@ func (w *LocalWorkerService) worker(e *job.JobEvent) {
 		return
 	}
 
-	if err = w.schedulingSrvc.ScheduleJob(e.Id, e.Cron); err != nil {
-		log.Printf("Failed on ScheduleId %s: %s", e.ScheduleId, err)
-		return
-	}
+	// if err = w.schedulingSrvc.ScheduleJob(e.Id, e.Cron); err != nil {
+	// 	log.Printf("Failed on ScheduleId %s: %s", e.ScheduleId, err)
+	// 	return
+	// }
 
 	log.Printf("ScheduleId %d success", e.ScheduleId)
 }
 
 func (w *LocalWorkerService) runEmail(e *job.Job) error {
-	data, err := w.emailSrvc.GetEmailJobData(e.Id)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second * 5)
+	defer cancel()
+
+	data, err := w.emailSrvc.GetEmailJobData(ctx, e.Id)
 	if err != nil {
+		log.Println(err)
 		return err
 	}
 
-	list, err := w.emailSrvc.GetEmailList(data.ListId)
+	list, err := w.emailSrvc.GetEmailListSubscribers(ctx, data.ListId)
 	if err != nil {
+		log.Println(err)
 		return err
 	}
 
-	template, err := w.emailSrvc.GetTemplate(data.ListId)
+	template, err := w.emailSrvc.GetTemplate(ctx, e.Id)
 	if err != nil {
+		log.Println(err)
 		return err
 	}
 
@@ -106,7 +114,7 @@ func (w *LocalWorkerService) runEmail(e *job.Job) error {
 	template.Sanitize()
 
 	for _, e := range list {
-		log.Printf("sending email to %s", e)
+		log.Printf("sending email to %s", e.Email)
 	}
 
 	return nil
