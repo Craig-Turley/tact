@@ -21,8 +21,8 @@ import (
 )
 
 type Server struct {
-	Addr string
-	jobService services.JobService
+	Addr         string
+	jobService   services.JobService
 	emailService services.EmailService
 }
 
@@ -35,8 +35,8 @@ func NewServer(addr string) *Server {
 	templateStore := repos.NewLocalTemplateStore(os.Getenv("TEMPLATE_DIR"))
 
 	return &Server{
-		Addr: addr,
-		jobService: services.NewJobService(jobRepo),
+		Addr:         addr,
+		jobService:   services.NewJobService(jobRepo),
 		emailService: services.NewEmailService(emailRepo, templateStore),
 	}
 }
@@ -45,7 +45,7 @@ func (s *Server) HandlePostJob(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "Error reading request body", http.StatusBadRequest)
-		return 
+		return
 	}
 
 	// get the jobInfo out of the body and hydrate correct data
@@ -56,15 +56,15 @@ func (s *Server) HandlePostJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newJob, err := s.jobService.CreateJob(r.Context(), &jobInfo) 
+	newJob, err := s.jobService.CreateJob(r.Context(), &jobInfo)
 	if err != nil {
 		http.Error(w, "Error saving job", http.StatusInternalServerError)
 		return
 	}
 
 	log.Println("New Job ID", newJob.Id)
-	
-	data, err := s.hydrateJob(r.Context(), newJob, body); 
+
+	data, err := s.hydratePostJob(r.Context(), newJob, body)
 	if err != nil {
 		log.Println("Error in hydrateJob", err)
 		http.Error(w, fmt.Sprintf("Malformed Request. Error parsing details of job type %d", newJob.Type), http.StatusBadRequest)
@@ -79,8 +79,8 @@ func (s *Server) HandlePostJob(w http.ResponseWriter, r *http.Request) {
 
 	jobDataJSON, err := json.Marshal(data)
 	if err != nil {
-			http.Error(w, "failed to marshal job data", http.StatusInternalServerError)
-			return
+		http.Error(w, "failed to marshal job data", http.StatusInternalServerError)
+		return
 	}
 
 	response := utils.MergeJson(jobJSON, jobDataJSON)
@@ -115,43 +115,52 @@ func (s *Server) HandleGetJob(w http.ResponseWriter, r *http.Request) {
 	w.Write(content)
 }
 
-func (s *Server) hydrateJob(ctx context.Context, j *job.Job, data []byte) (any, error) {
-	switch(j.Type) {
+func (s *Server) hydratePostJob(ctx context.Context, j *job.Job, data []byte) (any, error) {
+	switch j.Type {
 	case job.TypeEmail:
 		var emailData email.EmailData
 		err := json.Unmarshal(data, &emailData)
 		if err != nil {
 			return nil, err
 		}
-		
+
 		emailData.JobId = j.Id
 		if err := s.emailService.CreateEmailJob(ctx, &emailData); err != nil {
-			return nil, err	
+			return nil, err
 		}
 
 		return emailData, nil
-	}	
+	}
 
-	return nil, utils.NewError("Job type %d not supported", j.Type) 
+	return nil, utils.NewError("Job type %d not supported in hydratePostJob", j.Type)
+}
+
+func (s *Server) hydrateGetJob(ctx context.Context, j *job.Job) (any, error) {
+	switch j.Type {
+	case job.TypeEmail:
+		return s.emailService.GetEmailJobData(ctx, j.Id)
+	}
+
+	return nil, utils.NewError("Job type %d not supported in hydrateGetJob", j.Type)
 }
 
 func (s *Server) HandlePostCreateList(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-			http.Error(w, "Error reading request body", http.StatusBadRequest)
-			return
+		http.Error(w, "Error reading request body", http.StatusBadRequest)
+		return
 	}
 
 	data := &email.EmailListData{}
 	if err := json.Unmarshal(body, data); err != nil {
-			http.Error(w, "Error parsing request body", http.StatusBadRequest)
-			return
+		http.Error(w, "Error parsing request body", http.StatusBadRequest)
+		return
 	}
 
 	newId, err := s.emailService.CreateEmailList(r.Context(), data)
 	if err != nil {
-			http.Error(w, "Error creating new email list", http.StatusBadRequest)
-			return
+		http.Error(w, "Error creating new email list", http.StatusBadRequest)
+		return
 	}
 
 	data.ListId = newId
@@ -159,22 +168,23 @@ func (s *Server) HandlePostCreateList(w http.ResponseWriter, r *http.Request) {
 }
 
 type SubscribeRequest struct {
-	Subscribers []*email.SubscriberInformation `json:"subscribers"`	
+	Subscribers []*email.SubscriberInformation `json:"subscribers"`
 }
 
-const KEY_LIST_ID ="list_id"; 
+const KEY_LIST_ID = "list_id"
+
 func (s *Server) HandleGetList(w http.ResponseWriter, r *http.Request) {
 	listIdParam := r.URL.Query().Get("list_id")
 	if len(listIdParam) == 0 {
 		http.Error(w, "Error reading http path param", http.StatusBadRequest)
 		return
-	} 
+	}
 
 	listId, err := snowflake.ParseBase64(listIdParam)
 	if err != nil {
 		http.Error(w, "Error reading http path param", http.StatusBadRequest)
 		return
-	} 
+	}
 
 	subscribers, err := s.emailService.GetEmailListSubscribers(r.Context(), listId)
 	if err != nil {
@@ -196,17 +206,17 @@ func (s *Server) HandleGetList(w http.ResponseWriter, r *http.Request) {
 func (s *Server) HandlePostSubscribeToList(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-			http.Error(w, "Error reading request body", http.StatusBadRequest)
-			return
+		http.Error(w, "Error reading request body", http.StatusBadRequest)
+		return
 	}
-	
+
 	parsedId, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		http.Error(w, "Invalid ID in request", http.StatusBadRequest)
 		return
 	}
-	
-	var req SubscribeRequest 
+
+	var req SubscribeRequest
 	if err := json.Unmarshal(body, &req.Subscribers); err != nil {
 		log.Println("Error Parsing subscriber list", err)
 		http.Error(w, "Malformed Request. Error parsing subscriber details", http.StatusBadRequest)
@@ -261,7 +271,6 @@ func (s *Server) NewJobMux() http.Handler {
 	return router
 }
 
-
 func (s *Server) NewEmailMux() http.Handler {
 	router := http.NewServeMux()
 
@@ -270,19 +279,19 @@ func (s *Server) NewEmailMux() http.Handler {
 	router.HandleFunc("POST /list/{id}/subscribe", s.HandlePostSubscribeToList)
 	router.HandleFunc("GET /list/{id}", s.HandleGetListSubscribers)
 	router.HandleFunc("POST /template", s.HandlePostTemplate)
-	
+
 	return router
 }
 
 func (s *Server) Run() error {
 	router := http.NewServeMux()
 	apiRouter := http.NewServeMux()
-	
+
 	jobRouter := s.NewJobMux()
 	emailRouter := s.NewEmailMux()
 
 	apiRouter.HandleFunc("/health", s.HandlehealthCheck)
-	apiRouter.Handle("/job/", http.StripPrefix("/job", jobRouter))	
+	apiRouter.Handle("/job/", http.StripPrefix("/job", jobRouter))
 	apiRouter.Handle("/email/", http.StripPrefix("/email", emailRouter))
 
 	middleware := MiddlewareChain(
@@ -308,8 +317,8 @@ func (s *Server) HandlehealthCheck(w http.ResponseWriter, r *http.Request) {
 type Middleware func(h http.Handler) http.Handler
 
 func Logging(next http.Handler) http.Handler {
-	return http.HandlerFunc(func (w http.ResponseWriter, r *http.Request) {
-		start := time.Now()	
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
 		next.ServeHTTP(w, r)
 		log.Printf(r.Method, r.URL.Path, time.Since(start))
 	})
@@ -317,11 +326,11 @@ func Logging(next http.Handler) http.Handler {
 
 func MiddlewareChain(xs ...Middleware) Middleware {
 	return func(next http.Handler) http.Handler {
-		for i := len(xs)-1; i >= 0; i-- {
+		for i := len(xs) - 1; i >= 0; i-- {
 			x := xs[i]
 			next = x(next)
 		}
-		
+
 		return next
-	}	
+	}
 }

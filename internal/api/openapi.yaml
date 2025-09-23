@@ -1,0 +1,259 @@
+openapi: 3.0.3
+info:
+  version: "1.0.0"
+  title: Tact Webservice API
+servers:
+  - description: local service for testing
+    url: http://localhost:8080/api/v1
+tags:
+  - name: Tact
+    description: used by Tact application
+
+paths:
+  /job/{id}:
+    get:
+      summary: Get a single job
+      tags: [Tact]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+              examples:
+                emailJob:
+                  summary: Email job
+                  value:
+                    job_id: "147258369012345678"
+                    name: "Welcome email"
+                    retry_limit: 3
+                    job_type: "email"
+                    email_data:
+                      job_id: "147258369012345678"
+                      list_id: "998877665544332211"
+        '404':
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: The requested job could not be found.
+
+  /email/list:
+    post:
+      summary: Create email-data association (job ↔ list)
+      tags: [Tact]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailListData'
+            examples:
+              create:
+                value:
+                  list_id: "998877665544332211"
+                  name: "New product release"
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailListData'
+              examples:
+                created:
+                  value:
+                  list_id: "998877665544332211"
+                  name: "New product release"
+        '400':
+          description: Invalid payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: "job_id and list_id are required"
+        '404':
+          description: Related resource not found (job or list)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: "job or list not found"
+
+    get:
+      summary: List email-data associations
+      tags: [Tact]
+      parameters:
+        - in: query
+          name: list_id 
+          required: false
+          description: Filter associations by list_id
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EmailListData'
+              examples:
+                listAll:
+                  value:
+                    - list_id: "998877665544332211"
+                      name: "New product release"
+        '404':
+          description: No associations found (when filtering)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: "no email-data found for job_id 147258369012345678"
+components:
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: The requested job could not be found.
+
+    Job:
+      oneOf:
+        - $ref: '#/components/schemas/EmailJob'
+        - $ref: '#/components/schemas/SlackJob'
+        - $ref: '#/components/schemas/DiscordJob'
+        - $ref: '#/components/schemas/CustomJob'
+      discriminator:
+        propertyName: job_type
+        mapping:
+          email:   '#/components/schemas/EmailJob'
+          slack:   '#/components/schemas/SlackJob'
+          discord: '#/components/schemas/DiscordJob'
+          custom:  '#/components/schemas/CustomJob'
+      description: >
+        A job with common fields and type-specific payload. Discriminated by `job_type`.
+
+    JobBase:
+      type: object
+      required: [job_id, name, retry_limit, job_type]
+      properties:
+        job_id:
+          type: string
+          description: Snowflake ID of the job
+        name:
+          type: string
+        retry_limit:
+          type: integer
+        job_type:
+          $ref: '#/components/schemas/JobType'
+
+    EmailJob:
+      allOf:
+        - $ref: '#/components/schemas/JobBase'
+        - type: object
+          required: [email_data]
+          properties:
+            job_type:
+              $ref: '#/components/schemas/JobTypeEmail'
+            email_data:
+              $ref: '#/components/schemas/EmailData'
+
+    # SlackJob:
+    #   allOf:
+    #     - $ref: '#/components/schemas/JobBase'
+    #     - type: object
+    #       properties:
+    #         job_type:
+    #           $ref: '#/components/schemas/JobTypeSlack'
+    #         # Add real Slack fields when ready:
+    #         slack_channel:
+    #           type: string
+    #           description: Slack channel to post to (placeholder)
+    #
+    # DiscordJob:
+    #   allOf:
+    #     - $ref: '#/components/schemas/JobBase'
+    #     - type: object
+    #       properties:
+    #         job_type:
+    #           $ref: '#/components/schemas/JobTypeDiscord'
+    #         # Add real Discord fields when ready:
+    #         discord_channel:
+    #           type: string
+    #           description: Discord channel to post to (placeholder)
+    #
+    # CustomJob:
+    #   allOf:
+    #     - $ref: '#/components/schemas/JobBase'
+    #     - type: object
+    #       properties:
+    #         job_type:
+    #           $ref: '#/components/schemas/JobTypeCustom'
+    #         # Add real Custom fields when ready:
+    #         script_name:
+    #           type: string
+    #           description: Custom script name (placeholder)
+
+    EmailData:
+      type: object
+      required: [job_id, list_id]
+      properties:
+        job_id:
+          type: string
+          description: Snowflake ID of the job
+        list_id:
+          type: string
+          description: Snowflake ID of the list
+    
+    EmailListData:
+      type: object
+      required: [job_id, list_id]
+      properties:
+        list_id:
+          type: string
+          description: Snowflake ID of the list
+        name:
+          type: string
+          description: User input name of the list
+
+    JobType:
+      type: string
+      description: Public enum (string) mapped to backend uint8
+      enum: [start, custom, email, slack, discord, end]
+      example: email
+      x-internal-notes:
+        "start":   0
+        "custom":  1
+        "email":   2
+        "slack":   3
+        "discord": 4
+        "end":     5
+
+    # Narrow types to make each variant's `job_type` literal
+    JobTypeEmail:
+      type: string
+      enum: [email]
+    JobTypeSlack:
+      type: string
+      enum: [slack]
+    JobTypeDiscord:
+      type: string
+      enum: [discord]
+    JobTypeCustom:
+      type: string
+      enum: [custom]

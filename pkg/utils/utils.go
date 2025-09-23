@@ -47,7 +47,7 @@ func ValidEmailListName(name string) bool {
 
 func MergeJson(json1, json2 []byte) []byte {
 	var m1, m2 map[string]any
-	
+
 	json.Unmarshal(json1, &m1)
 	json.Unmarshal(json2, &m2)
 
