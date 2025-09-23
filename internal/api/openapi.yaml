@@ -135,16 +135,10 @@ components:
     Job:
       oneOf:
         - $ref: '#/components/schemas/EmailJob'
-        # - $ref: '#/components/schemas/SlackJob'
-        # - $ref: '#/components/schemas/DiscordJob'
-        # - $ref: '#/components/schemas/CustomJob'
       discriminator:
         propertyName: job_type
         mapping:
           email:   '#/components/schemas/EmailJob'
-          # slack:   '#/components/schemas/SlackJob'
-          # discord: '#/components/schemas/DiscordJob'
-          # custom:  '#/components/schemas/CustomJob'
       description: >
         A job with common fields and type-specific payload. Discriminated by `job_type`.
 
@@ -172,42 +166,6 @@ components:
               $ref: '#/components/schemas/JobTypeEmail'
             email_data:
               $ref: '#/components/schemas/EmailData'
-
-    # SlackJob:
-    #   allOf:
-    #     - $ref: '#/components/schemas/JobBase'
-    #     - type: object
-    #       properties:
-    #         job_type:
-    #           $ref: '#/components/schemas/JobTypeSlack'
-    #         # Add real Slack fields when ready:
-    #         slack_channel:
-    #           type: string
-    #           description: Slack channel to post to (placeholder)
-    #
-    # DiscordJob:
-    #   allOf:
-    #     - $ref: '#/components/schemas/JobBase'
-    #     - type: object
-    #       properties:
-    #         job_type:
-    #           $ref: '#/components/schemas/JobTypeDiscord'
-    #         # Add real Discord fields when ready:
-    #         discord_channel:
-    #           type: string
-    #           description: Discord channel to post to (placeholder)
-    #
-    # CustomJob:
-    #   allOf:
-    #     - $ref: '#/components/schemas/JobBase'
-    #     - type: object
-    #       properties:
-    #         job_type:
-    #           $ref: '#/components/schemas/JobTypeCustom'
-    #         # Add real Custom fields when ready:
-    #         script_name:
-    #           type: string
-    #           description: Custom script name (placeholder)
 
     EmailData:
       type: object
@@ -244,7 +202,6 @@ components:
         "discord": 4
         "end":     5
 
-    # Narrow types to make each variant's `job_type` literal
     JobTypeEmail:
       type: string
       enum: [email]
