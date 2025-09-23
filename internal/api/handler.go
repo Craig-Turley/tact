@@ -105,14 +105,28 @@ func (s *Server) HandleGetJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	content, err := json.Marshal(j)
+	data, err := s.hydrateGetJob(r.Context(), j)
 	if err != nil {
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Error getting job with ID %d, %s", jobId, err.Error()), http.StatusNotFound)
 		return
 	}
 
+	jobJSON, err := json.Marshal(j)
+	if err != nil {
+		http.Error(w, "failed to marshal job data", http.StatusInternalServerError)
+		return
+	}
+
+	jobDataJSON, err := json.Marshal(data)
+	if err != nil {
+		http.Error(w, "failed to marshal job data", http.StatusInternalServerError)
+		return
+	}
+
+	response := utils.MergeJson(jobJSON, jobDataJSON)
+
 	w.WriteHeader(http.StatusOK)
-	w.Write(content)
+	w.Write(response)
 }
 
 func (s *Server) hydratePostJob(ctx context.Context, j *job.Job, data []byte) (any, error) {
