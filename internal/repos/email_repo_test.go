@@ -1,14 +1,14 @@
 package repos_test
 
 import (
-    "context"
-    "fmt"
-    "testing"
-    "time"
+	"context"
+	"fmt"
+	"testing"
+	"time"
 
-    "github.com/Craig-Turley/task-scheduler.git/internal/repos"
-    "github.com/Craig-Turley/task-scheduler.git/pkg/common/email"
-    "github.com/Craig-Turley/task-scheduler.git/pkg/idgen"
+	"github.com/Craig-Turley/task-scheduler.git/internal/repos"
+	"github.com/Craig-Turley/task-scheduler.git/pkg/common/email"
+	"github.com/Craig-Turley/task-scheduler.git/pkg/idgen"
 )
 
 const TESTS = 5
@@ -18,9 +18,9 @@ func TestEmailRepo(t *testing.T) {
 	emailRepo := repos.NewSqliteEmailRepo(sqlite3db)
 
 	type EmailRepoTestData struct {
-			emailData     *email.EmailData
-			emailListData *email.EmailListData
-			subscribers   []*email.SubscriberInformation
+		emailData     *email.EmailData
+		emailListData *email.EmailListData
+		subscribers   []*email.SubscriberInformation
 	}
 
 	tests := make([]EmailRepoTestData, 0, TESTS)
@@ -51,43 +51,43 @@ func TestEmailRepo(t *testing.T) {
 		defer cancel()
 
 		if err := emailRepo.SaveEmailData(ctx, tc.emailData); err != nil {
-				t.Fatalf("save email data %d: %v", i, err)
+			t.Fatalf("save email data %d: %v", i, err)
 		}
 	}
 
 	for i, tc := range tests {
-		i, tc := i, tc 
+		i, tc := i, tc
 		t.Run(fmt.Sprintf("%02d/GetEmailData", i), func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5 * time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
 			got, err := emailRepo.GetEmailData(ctx, tc.emailData.JobId)
 			if err != nil {
-					t.Fatalf("GetEmailData %d (job:%v): %v", i, tc.emailData.JobId, err)
+				t.Fatalf("GetEmailData %d (job:%v): %v", i, tc.emailData.JobId, err)
 			}
 
 			if got.JobId != tc.emailData.JobId {
-					t.Fatalf("JobId mismatch: got %v want %v", got.JobId, tc.emailData.JobId)
+				t.Fatalf("JobId mismatch: got %v want %v", got.JobId, tc.emailData.JobId)
 			}
 
 			if got.ListId != tc.emailData.ListId {
-					t.Fatalf("ListId mismatch: got %v want %v", got.ListId, tc.emailData.ListId)
+				t.Fatalf("ListId mismatch: got %v want %v", got.ListId, tc.emailData.ListId)
 			}
 		})
 	}
 
 	for i, tc := range tests {
-		ctx, cancel := context.WithTimeout(context.Background(), 5 * time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if _, err := emailRepo.CreateEmailList(ctx, tc.emailListData); err != nil {
-				t.Fatalf("create email list %d: %v", i, err)
+			t.Fatalf("create email list %d: %v", i, err)
 		}
 	}
 
 	for i, tc := range tests {
 		i, tc := i, tc
 		t.Run(fmt.Sprintf("%02d/GetEmailListData", i), func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5 * time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
 			got, err := emailRepo.GetEmailListData(ctx, tc.emailListData.ListId)
@@ -106,9 +106,9 @@ func TestEmailRepo(t *testing.T) {
 	}
 
 	for i, tc := range tests {
-		ctx, cancel := context.WithTimeout(context.Background(), 5 * time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if _, err := emailRepo.AddToEmailList(ctx, tc.emailData.ListId, tc.subscribers); err != nil {
+		if err := emailRepo.AddToEmailList(ctx, tc.emailData.ListId, tc.subscribers); err != nil {
 			t.Fatalf("add email to list %d: %v", i, err)
 		}
 	}
@@ -121,11 +121,11 @@ func TestEmailRepo(t *testing.T) {
 
 			got, err := emailRepo.GetEmailListSubscribers(ctx, tc.emailData.ListId)
 			if err != nil {
-					t.Fatalf("GetEmailListSubscribers %d (list:%v): %v", i, tc.emailData.ListId, err)
+				t.Fatalf("GetEmailListSubscribers %d (list:%v): %v", i, tc.emailData.ListId, err)
 			}
 
 			if len(got) != len(tc.subscribers) {
-					t.Fatalf("subscriber list length mismatch: got %d want %d", len(got), len(tc.subscribers))
+				t.Fatalf("subscriber list length mismatch: got %d want %d", len(got), len(tc.subscribers))
 			}
 
 			for j := range len(got) {
@@ -157,4 +157,3 @@ func TestEmailRepo(t *testing.T) {
 		})
 	}
 }
-

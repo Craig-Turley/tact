@@ -25,6 +25,7 @@ func NewJobService(repo repos.JobRepo) *jobService {
 	return &jobService{repo: repo}
 }
 
+// do this in the orchestrator now
 func (s *jobService) CreateJob(ctx context.Context, job *job.Job) (*job.Job, error) {
 	if err := job.Validate(); err != nil {
 		return nil, err

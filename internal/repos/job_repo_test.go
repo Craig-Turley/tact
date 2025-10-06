@@ -11,10 +11,9 @@ import (
 	"github.com/Craig-Turley/task-scheduler.git/pkg/idgen"
 )
 
-
 func TestJobRepo(t *testing.T) {
 	jobRepo := repos.NewSqliteJobRepo(sqlite3db)
-	
+
 	tests := []*job.Job{
 		{Id: idgen.NewId(), Name: "Test 1", RetryLimit: 3, Type: job.TypeEmail},
 		{Id: idgen.NewId(), Name: "Welcome Email", RetryLimit: 5, Type: job.TypeEmail},
@@ -24,11 +23,11 @@ func TestJobRepo(t *testing.T) {
 		{Id: idgen.NewId(), Name: "Account Verification Email", RetryLimit: 3, Type: job.TypeEmail},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
-	
+
 	for i, tc := range tests {
-		if err := jobRepo.CreateJob(ctx, tc); err != nil {
+		if _, err := jobRepo.CreateJob(ctx, tc); err != nil {
 			t.Fatalf("create job %d (%s): %v", i, tc.Name, err)
 		}
 	}

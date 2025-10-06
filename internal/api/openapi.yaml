@@ -46,6 +46,27 @@ paths:
               example:
                 error: The requested job could not be found.
 
+  /job/new:
+    post:
+      summary: Create a new job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/Components/schemas/Job'
+            examples:
+              emailJob:
+                summary: Email job
+                value:
+                  job_id: "147258369012345678"
+                  name: "Welcome email"
+                  retry_limit: 3
+                  job_type: "email"
+                  email_data:
+                    job_id: "147258369012345678"
+                    list_id: "998877665544332211"
+
   /email/list:
     post:
       summary: Create email-data association (job ↔ list)
@@ -62,15 +83,18 @@ paths:
                   list_id: "998877665544332211"
                   name: "New product release"
       responses:
-        '201':
+        '200':
           description: Created
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/EmailListData'
-              examples:
-                created:
-                  value:
+                type: object
+                properties:
+                  list_id:
+                    type: string
+                  name:
+                    type: string
+                example:
                   list_id: "998877665544332211"
                   name: "New product release"
         '400':
@@ -122,6 +146,54 @@ paths:
                 $ref: '#/components/schemas/Error'
               example:
                 error: "no email-data found for job_id 147258369012345678"
+
+  /email/list/{id}/subscribe:
+    post: 
+      summary: Send a list of subscriber information for subscription to a list
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/Components/schemas/SubscriberInformation'
+
+  /email/list/{id}:
+    get:
+      summary: Get a list of subscriber information associated with a particular audience list
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The audience list ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: A list of subscribers for the specified audience list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SubscriberInformation'
+              example:
+                - id: "987654321098765432"
+                  firstName: "Jane"
+                  lastName: "Doe"
+                  email: "jane.doe@example.com"
+                  listId: "123456789012345678"
+                  isSubscribed: true
+                - id: "876543210987654321"
+                  firstName: "John"
+                  lastName: "Smith"
+                  email: "john.smith@example.com"
+                  listId: "123456789012345678"
+                  isSubscribed: false
+        '404':
+          description: Audience list not found
+
 components:
   schemas:
     Error:
@@ -202,6 +274,7 @@ components:
         "discord": 4
         "end":     5
 
+    # Narrow types to make each variant's `job_type` literal
     JobTypeEmail:
       type: string
       enum: [email]
@@ -214,3 +287,40 @@ components:
     JobTypeCustom:
       type: string
       enum: [custom]
+    
+    SubscriberInformation:
+      type: object
+      properties:
+        id:
+          type: string
+          format: snowflake
+          description: Unique identifier for the subscriber
+          example: "987654321098765432"
+        firstName:
+          type: string
+          description: Subscriber's first name
+          example: "Jane"
+        lastName:
+          type: string
+          description: Subscriber's last name
+          example: "Doe"
+        email:
+          type: string
+          format: email
+          description: Subscriber's email address
+          example: "jane.doe@example.com"
+        listId:
+          type: string
+          format: snowflake
+          description: Identifier of the list the subscriber belongs to
+          example: "123456789012345678"
+        isSubscribed:
+          type: boolean
+          description: Whether the subscriber is currently subscribed
+          example: true
+      required:
+        - firstName
+        - lastName
+        - email
+        - listId
+        - isSubscribed

@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/Craig-Turley/task-scheduler.git/pkg/common/job"
+	"github.com/Craig-Turley/task-scheduler.git/pkg/idgen"
 	"github.com/bwmarrin/snowflake"
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -13,6 +14,7 @@ import (
 type JobRepo interface {
 	CreateJob(ctx context.Context, job *job.Job) (*job.Job, error)
 	GetJob(ctx context.Context, id snowflake.ID) (*job.Job, error)
+	DeleteJob(ctx context.Context, id snowflake.ID) error
 }
 
 type SqliteJobRepo struct {
@@ -34,6 +36,7 @@ func (s *SqliteJobRepo) CreateJob(ctx context.Context, job *job.Job) (*job.Job, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	job.Id = idgen.NewId()
 	query := "INSERT INTO jobs (id, name, retry_limit, type) VALUES (?, ?, ?, ?)"
 	_, err := s.store.ExecContext(ctx, query, job.Id, job.Name, job.RetryLimit, job.Type)
 	if err != nil {
@@ -59,4 +62,16 @@ func (s *SqliteJobRepo) GetJob(ctx context.Context, id snowflake.ID) (*job.Job, 
 	}
 
 	return &job, nil
+}
+func (s *SqliteJobRepo) DeleteJob(ctx context.Context, id snowflake.ID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	query := "DELETE FROM jobs WHERE id = "
+	_, err := s.store.ExecContext(ctx, query, id)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

@@ -3,17 +3,14 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
-	"time"
 
 	"github.com/Craig-Turley/task-scheduler.git/internal/db"
 	"github.com/Craig-Turley/task-scheduler.git/internal/repos"
-	"github.com/Craig-Turley/task-scheduler.git/internal/services"
 	"github.com/Craig-Turley/task-scheduler.git/pkg/common/email"
 	"github.com/Craig-Turley/task-scheduler.git/pkg/common/job"
 	"github.com/Craig-Turley/task-scheduler.git/pkg/utils"
@@ -21,26 +18,25 @@ import (
 )
 
 type Server struct {
-	Addr         string
-	jobService   services.JobService
-	emailService services.EmailService
+	Addr  string
+	Store *repos.Storage
 }
 
-func NewServer(addr string) *Server {
-	log.Println(os.LookupEnv("SQLITE_DB_PATH"))
-	sqlite3db := db.NewSqliteDb("./scheduling.db")
+type ServerOpts struct{}
 
-	jobRepo := repos.NewSqliteJobRepo(sqlite3db)
-	emailRepo := repos.NewSqliteEmailRepo(sqlite3db)
-	templateStore := repos.NewLocalTemplateStore(os.Getenv("TEMPLATE_DIR"))
+func NewServer(addr string) *Server {
+	sqlite3db := db.NewSqliteDb("./scheduling.db")
+	templateStorePath := os.Getenv("TEMPLATE_DIR")
+
+	store := repos.NewSqliteStore(sqlite3db, templateStorePath)
 
 	return &Server{
-		Addr:         addr,
-		jobService:   services.NewJobService(jobRepo),
-		emailService: services.NewEmailService(emailRepo, templateStore),
+		Addr:  addr,
+		Store: store,
 	}
 }
 
+// NOTE: modifies data - saga pattern needed
 func (s *Server) HandlePostJob(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -56,77 +52,79 @@ func (s *Server) HandlePostJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newJob, err := s.jobService.CreateJob(r.Context(), &jobInfo)
+	newJob, err := s.Store.Jobs.CreateJob(r.Context(), &jobInfo)
 	if err != nil {
-		http.Error(w, "Error saving job", http.StatusInternalServerError)
+		s.internalServerError(w, r, nil)
 		return
 	}
-
-	log.Println("New Job ID", newJob.Id)
 
 	data, err := s.hydratePostJob(r.Context(), newJob, body)
 	if err != nil {
 		log.Println("Error in hydrateJob", err)
-		http.Error(w, fmt.Sprintf("Malformed Request. Error parsing details of job type %d", newJob.Type), http.StatusBadRequest)
+		s.Store.Jobs.DeleteJob(r.Context(), newJob.Id) // roll back this saga
+		s.badRequestResponse(w, r, err)
 		return
 	}
 
 	jobJSON, err := json.Marshal(newJob)
 	if err != nil {
-		http.Error(w, "failed to marshal job data", http.StatusInternalServerError)
+		s.internalServerError(w, r, nil)
 		return
 	}
 
 	jobDataJSON, err := json.Marshal(data)
 	if err != nil {
-		http.Error(w, "failed to marshal job data", http.StatusInternalServerError)
+		s.internalServerError(w, r, nil)
 		return
 	}
 
 	response := utils.MergeJson(jobJSON, jobDataJSON)
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write(response)
+	if err := s.jsonResponse(w, http.StatusOK, response); err != nil {
+		s.internalServerError(w, r, err)
+		return
+	}
 }
 
 func (s *Server) HandleGetJob(w http.ResponseWriter, r *http.Request) {
 	parsedId, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		http.Error(w, "Invalid ID in request", http.StatusBadRequest)
+		s.badRequestResponse(w, r, err)
 		return
 	}
 
 	jobId := snowflake.ID(parsedId)
 
-	j, err := s.jobService.GetJob(r.Context(), jobId)
+	j, err := s.Store.Jobs.GetJob(r.Context(), jobId)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Error getting job with ID %d, %s", jobId, err.Error()), http.StatusNotFound)
+		s.notFoundResponse(w, r, err)
 		return
 	}
 
 	data, err := s.hydrateGetJob(r.Context(), j)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Error getting job with ID %d, %s", jobId, err.Error()), http.StatusNotFound)
+		s.notFoundResponse(w, r, err)
 		return
 	}
 
 	jobJSON, err := json.Marshal(j)
 	if err != nil {
-		http.Error(w, "failed to marshal job data", http.StatusInternalServerError)
+		s.internalServerError(w, r, nil)
 		return
 	}
 
 	jobDataJSON, err := json.Marshal(data)
 	if err != nil {
-		http.Error(w, "failed to marshal job data", http.StatusInternalServerError)
+		s.internalServerError(w, r, nil)
 		return
 	}
 
 	response := utils.MergeJson(jobJSON, jobDataJSON)
 
-	w.WriteHeader(http.StatusOK)
-	w.Write(response)
+	if err := s.jsonResponse(w, http.StatusOK, response); err != nil {
+		s.internalServerError(w, r, err)
+		return
+	}
 }
 
 func (s *Server) hydratePostJob(ctx context.Context, j *job.Job, data []byte) (any, error) {
@@ -139,7 +137,7 @@ func (s *Server) hydratePostJob(ctx context.Context, j *job.Job, data []byte) (a
 		}
 
 		emailData.JobId = j.Id
-		if err := s.emailService.CreateEmailJob(ctx, &emailData); err != nil {
+		if err := s.Store.Email.SaveEmailData(ctx, &emailData); err != nil {
 			return nil, err
 		}
 
@@ -152,33 +150,31 @@ func (s *Server) hydratePostJob(ctx context.Context, j *job.Job, data []byte) (a
 func (s *Server) hydrateGetJob(ctx context.Context, j *job.Job) (any, error) {
 	switch j.Type {
 	case job.TypeEmail:
-		return s.emailService.GetEmailJobData(ctx, j.Id)
+		return s.Store.Email.GetEmailData(ctx, j.Id)
 	}
 
 	return nil, utils.NewError("Job type %d not supported in hydrateGetJob", j.Type)
 }
 
+// NOTE: modifies data
 func (s *Server) HandlePostCreateList(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "Error reading request body", http.StatusBadRequest)
+	data := email.EmailListData{}
+	if err := readJSON(w, r, &data); err != nil {
+		s.badRequestResponse(w, r, err)
 		return
 	}
 
-	data := &email.EmailListData{}
-	if err := json.Unmarshal(body, data); err != nil {
-		http.Error(w, "Error parsing request body", http.StatusBadRequest)
-		return
-	}
-
-	newId, err := s.emailService.CreateEmailList(r.Context(), data)
+	newId, err := s.Store.Email.CreateEmailList(r.Context(), &data)
 	if err != nil {
-		http.Error(w, "Error creating new email list", http.StatusBadRequest)
+		s.badRequestResponse(w, r, nil)
 		return
 	}
 
 	data.ListId = newId
-	w.WriteHeader(http.StatusOK)
+	if err := s.jsonResponse(w, http.StatusOK, newId); err != nil {
+		s.internalServerError(w, r, err)
+		return
+	}
 }
 
 type SubscribeRequest struct {
@@ -190,50 +186,46 @@ const KEY_LIST_ID = "list_id"
 func (s *Server) HandleGetList(w http.ResponseWriter, r *http.Request) {
 	listIdParam := r.URL.Query().Get("list_id")
 	if len(listIdParam) == 0 {
-		http.Error(w, "Error reading http path param", http.StatusBadRequest)
+		s.badRequestResponse(w, r, utils.NewError("Error reading http path param"))
 		return
 	}
 
 	listId, err := snowflake.ParseBase64(listIdParam)
 	if err != nil {
-		http.Error(w, "Error reading http path param", http.StatusBadRequest)
+		s.badRequestResponse(w, r, utils.NewError("Error reading http path param"))
 		return
 	}
 
-	subscribers, err := s.emailService.GetEmailListSubscribers(r.Context(), listId)
+	subscribers, err := s.Store.Email.GetEmailListSubscribers(r.Context(), listId)
 	if err != nil {
-		http.Error(w, "Error getting list subscribers", http.StatusBadRequest)
+		s.badRequestResponse(w, r, utils.NewError("Error getting list subscribers"))
 		return
 	}
 
 	payload := SubscribeRequest{Subscribers: subscribers}
 	bytes, err := json.Marshal(payload)
 	if err != nil {
-		http.Error(w, "Internal error", http.StatusInternalServerError)
+		s.internalServerError(w, r, nil)
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	w.Write(bytes)
+	if err := s.jsonResponse(w, http.StatusOK, bytes); err != nil {
+		s.internalServerError(w, r, err)
+		return
+	}
 }
 
+// NOTE: modifies data
 func (s *Server) HandlePostSubscribeToList(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "Error reading request body", http.StatusBadRequest)
+	var req SubscribeRequest
+	if err := readJSON(w, r, &req); err != nil {
+		s.badRequestResponse(w, r, err)
 		return
 	}
 
 	parsedId, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		http.Error(w, "Invalid ID in request", http.StatusBadRequest)
-		return
-	}
-
-	var req SubscribeRequest
-	if err := json.Unmarshal(body, &req.Subscribers); err != nil {
-		log.Println("Error Parsing subscriber list", err)
-		http.Error(w, "Malformed Request. Error parsing subscriber details", http.StatusBadRequest)
+		s.badRequestResponse(w, r, utils.NewError("Invalid ID in request"))
 		return
 	}
 
@@ -242,34 +234,36 @@ func (s *Server) HandlePostSubscribeToList(w http.ResponseWriter, r *http.Reques
 		subs = append(subs, email.NewSubscriberInformation(s.Id, s.FirstName, s.LastName, s.Email, s.ListId, s.IsSubscribed))
 	}
 
-	s.emailService.AddToEmailList(r.Context(), snowflake.ID(parsedId), subs)
+	if err := s.Store.Email.AddToEmailList(r.Context(), snowflake.ID(parsedId), subs); err != nil {
+		s.multiStatusReponse(w, r, err)
+		return
+	}
+
+	if err := s.jsonResponse(w, http.StatusOK, nil); err != nil {
+		s.internalServerError(w, r, err)
+		return
+	}
 }
 
 func (s *Server) HandleGetListSubscribers(w http.ResponseWriter, r *http.Request) {
 	parsedId, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		http.Error(w, "Invalid ID in request", http.StatusBadRequest)
+		s.badRequestResponse(w, r, utils.NewError("Error parsing list Id"))
 		return
 	}
 
 	listId := snowflake.ID(parsedId)
 
-	list, err := s.emailService.GetEmailListSubscribers(r.Context(), listId)
+	list, err := s.Store.Email.GetEmailListSubscribers(r.Context(), listId)
 	if err != nil {
-		log.Printf("Error getting list of id %d", listId)
-		http.Error(w, "Error getting list of id %d", http.StatusNotFound)
+		s.notFoundResponse(w, r, err)
 		return
 	}
 
-	contents, err := json.Marshal(list)
-	if err != nil {
-		log.Println("Error marshalling list data")
-		http.Error(w, "Internal Server error", http.StatusInternalServerError)
+	if err := s.jsonResponse(w, http.StatusOK, list); err != nil {
+		s.internalServerError(w, r, err)
 		return
 	}
-
-	w.WriteHeader(http.StatusOK)
-	w.Write(contents)
 }
 
 func (s *Server) HandlePostTemplate(w http.ResponseWriter, r *http.Request) {
@@ -299,6 +293,7 @@ func (s *Server) NewEmailMux() http.Handler {
 
 func (s *Server) Run() error {
 	router := http.NewServeMux()
+
 	apiRouter := http.NewServeMux()
 
 	jobRouter := s.NewJobMux()
@@ -326,25 +321,4 @@ func (s *Server) Run() error {
 
 func (s *Server) HandlehealthCheck(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("Hello\n"))
-}
-
-type Middleware func(h http.Handler) http.Handler
-
-func Logging(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		next.ServeHTTP(w, r)
-		log.Printf(r.Method, r.URL.Path, time.Since(start))
-	})
-}
-
-func MiddlewareChain(xs ...Middleware) Middleware {
-	return func(next http.Handler) http.Handler {
-		for i := len(xs) - 1; i >= 0; i-- {
-			x := xs[i]
-			next = x(next)
-		}
-
-		return next
-	}
 }
