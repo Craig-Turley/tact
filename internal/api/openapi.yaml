@@ -49,12 +49,13 @@ paths:
   /job/new:
     post:
       summary: Create a new job
+      tags: [Tact]
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/Components/schemas/Job'
+              $ref: '#/components/schemas/Job'
             examples:
               emailJob:
                 summary: Email job
@@ -66,6 +67,23 @@ paths:
                   email_data:
                     job_id: "147258369012345678"
                     list_id: "998877665544332211"
+      responses:
+        '201':
+          description: Job created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+              examples:
+                emailJob:
+                  value:
+                    job_id: "147258369012345678"
+                    name: "Welcome email"
+                    retry_limit: 3
+                    job_type: "email"
+                    email_data:
+                      job_id: "147258369012345678"
+                      list_id: "998877665544332211"
 
   /email/list:
     post:
@@ -80,6 +98,7 @@ paths:
             examples:
               create:
                 value:
+                  job_id: "147258369012345678"
                   list_id: "998877665544332211"
                   name: "New product release"
       responses:
@@ -119,7 +138,7 @@ paths:
       tags: [Tact]
       parameters:
         - in: query
-          name: list_id 
+          name: list_id
           required: false
           description: Filter associations by list_id
           schema:
@@ -136,7 +155,8 @@ paths:
               examples:
                 listAll:
                   value:
-                    - list_id: "998877665544332211"
+                    - job_id: "147258369012345678"
+                      list_id: "998877665544332211"
                       name: "New product release"
         '404':
           description: No associations found (when filtering)
@@ -148,8 +168,16 @@ paths:
                 error: "no email-data found for job_id 147258369012345678"
 
   /email/list/{id}/subscribe:
-    post: 
+    post:
       summary: Send a list of subscriber information for subscription to a list
+      tags: [Tact]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          description: The audience list ID
+          schema:
+            type: string
       requestBody:
         required: true
         content:
@@ -157,11 +185,15 @@ paths:
             schema:
               type: array
               items:
-                $ref: '#/Components/schemas/SubscriberInformation'
+                $ref: '#/components/schemas/SubscriberInformation'
+      responses:
+        '202':
+          description: Subscription request accepted
 
   /email/list/{id}:
     get:
       summary: Get a list of subscriber information associated with a particular audience list
+      tags: [Tact]
       parameters:
         - name: id
           in: path
@@ -210,7 +242,7 @@ components:
       discriminator:
         propertyName: job_type
         mapping:
-          email:   '#/components/schemas/EmailJob'
+          email: '#/components/schemas/EmailJob'
       description: >
         A job with common fields and type-specific payload. Discriminated by `job_type`.
 
@@ -249,11 +281,14 @@ components:
         list_id:
           type: string
           description: Snowflake ID of the list
-    
+
     EmailListData:
       type: object
       required: [job_id, list_id]
       properties:
+        job_id:
+          type: string
+          description: Snowflake ID of the job
         list_id:
           type: string
           description: Snowflake ID of the list
@@ -267,14 +302,13 @@ components:
       enum: [start, custom, email, slack, discord, end]
       example: email
       x-internal-notes:
-        "start":   0
-        "custom":  1
-        "email":   2
-        "slack":   3
+        "start": 0
+        "custom": 1
+        "email": 2
+        "slack": 3
         "discord": 4
-        "end":     5
+        "end": 5
 
-    # Narrow types to make each variant's `job_type` literal
     JobTypeEmail:
       type: string
       enum: [email]
@@ -287,7 +321,7 @@ components:
     JobTypeCustom:
       type: string
       enum: [custom]
-    
+
     SubscriberInformation:
       type: object
       properties:
@@ -324,3 +358,4 @@ components:
         - email
         - listId
         - isSubscribed
+
