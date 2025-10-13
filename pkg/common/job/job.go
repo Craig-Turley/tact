@@ -40,6 +40,7 @@ func JobTypeToString(t JobType) string {
 
 type Job struct {
 	Id         snowflake.ID `json:"job_id"`
+	UserId     string       `json:"user_id"` // this is provided from goth
 	Name       string       `json:"name"`
 	RetryLimit int          `json:"retry_limit"`
 	Type       JobType      `json:"job_type"`

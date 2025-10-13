@@ -8,31 +8,41 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"time"
 
+	"github.com/Craig-Turley/task-scheduler.git/internal/auth"
 	"github.com/Craig-Turley/task-scheduler.git/internal/db"
 	"github.com/Craig-Turley/task-scheduler.git/internal/repos"
 	"github.com/Craig-Turley/task-scheduler.git/pkg/common/email"
 	"github.com/Craig-Turley/task-scheduler.git/pkg/common/job"
+	"github.com/Craig-Turley/task-scheduler.git/pkg/common/user"
 	"github.com/Craig-Turley/task-scheduler.git/pkg/utils"
 	"github.com/bwmarrin/snowflake"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/markbates/goth"
+	"github.com/markbates/goth/gothic"
 )
 
 type Server struct {
-	Addr  string
-	Store *repos.Storage
+	Addr   string
+	Origin string
+	Store  *repos.Storage
 }
-
-type ServerOpts struct{}
 
 func NewServer(addr string) *Server {
 	sqlite3db := db.NewSqliteDb("./scheduling.db")
 	templateStorePath := os.Getenv("TEMPLATE_DIR")
+	origin := utils.Getenv("ORIGIN", "")
+	if len(origin) == 0 {
+		panic("ORIGIN not set")
+	}
 
 	store := repos.NewSqliteStore(sqlite3db, templateStorePath)
 
 	return &Server{
-		Addr:  addr,
-		Store: store,
+		Addr:   addr,
+		Origin: origin,
+		Store:  store,
 	}
 }
 
@@ -270,6 +280,121 @@ func (s *Server) HandlePostTemplate(w http.ResponseWriter, r *http.Request) {
 	log.Println("Handling POST template")
 }
 
+func (s *Server) getUserAuthProvider(r *http.Request) (*http.Request, error) {
+	provider := r.PathValue("provider")
+	if len(provider) == 0 {
+		return r, utils.NewError("Cannot parse auth provider")
+	}
+
+	return r.WithContext(context.WithValue(r.Context(), "provider", provider)), nil
+}
+
+func (s *Server) HandleGetAuth(w http.ResponseWriter, r *http.Request) {
+	var err error
+	r, err = s.getUserAuthProvider(r)
+	if err != nil {
+		s.badRequestResponse(w, r, utils.NewError("Invalid ID in request"))
+		return
+	}
+
+	if user, err := gothic.CompleteUserAuth(w, r); err == nil {
+		s.authorizeAndRedirectUser(user, w, r)
+	} else {
+		gothic.BeginAuthHandler(w, r)
+	}
+}
+
+func (s *Server) authorizeAndRedirectUser(user goth.User, w http.ResponseWriter, r *http.Request) {
+	claims := jwt.MapClaims{
+		"sub":       user.UserID,
+		"email":     user.Email,
+		"name":      user.Name,
+		"nick":      user.NickName,
+		"avatar":    user.AvatarURL,
+		"provider":  user.Provider,
+		"issued_at": time.Now().Unix(),
+		"exp":       time.Now().Add(24 * time.Hour).Unix(),
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, err := token.SignedString([]byte(auth.JWTSecret))
+	if err != nil {
+		s.clientErrorRedirect(w, r, err)
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:  auth.CookieName,
+		Value: signed,
+		Path:  "/",
+		// Domain: omit on localhost
+		MaxAge:   24 * 3600,
+		HttpOnly: true,
+		Secure:   false, // set true when serving over https
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	http.Redirect(w, r, s.Origin, http.StatusFound) // 302
+}
+
+func (s *Server) HandleAuthCallback(w http.ResponseWriter, r *http.Request) {
+	var err error
+	r, err = s.getUserAuthProvider(r)
+	if err != nil {
+		s.badRequestResponse(w, r, utils.NewError("Invalid ID in request"))
+		return
+	}
+
+	user, err := gothic.CompleteUserAuth(w, r)
+	if err != nil {
+		s.unauthorizedErrorResponse(w, r, err)
+		return
+	}
+
+	s.authorizeAndRedirectUser(user, w, r)
+}
+
+func (s *Server) HandleGetUser(w http.ResponseWriter, r *http.Request) {
+	c, err := r.Cookie(auth.CookieName)
+	if err != nil || len(c.Value) == 0 {
+		s.unauthorizedErrorResponse(w, r, err)
+		return
+	}
+
+	token, err := jwt.Parse(c.Value, func(t *jwt.Token) (any, error) { return auth.JWTSecret, nil })
+	if err != nil || !token.Valid {
+		http.Error(w, "invalid session", http.StatusUnauthorized)
+		return
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		s.unauthorizedErrorResponse(w, r, err)
+		return
+	}
+
+	user := user.UserFromClaims(claims)
+	writeJSON(w, http.StatusOK, user)
+}
+
+func (s *Server) HandleGetLogout(w http.ResponseWriter, r *http.Request) {
+	if err := gothic.Logout(w, r); err != nil {
+		s.unauthorizedErrorResponse(w, r, err)
+	}
+
+	writeJSON(w, http.StatusOK, nil)
+}
+
+func (s *Server) NewAuthRouter() http.Handler {
+	router := http.NewServeMux()
+
+	router.HandleFunc("GET /{provider}", s.HandleGetAuth)
+	router.HandleFunc("GET /{provider}/callback", s.HandleAuthCallback)
+	router.HandleFunc("GET /user", s.HandleGetUser)
+
+	return router
+}
+
 func (s *Server) NewJobMux() http.Handler {
 	router := http.NewServeMux()
 
@@ -292,31 +417,34 @@ func (s *Server) NewEmailMux() http.Handler {
 }
 
 func (s *Server) Run() error {
-	router := http.NewServeMux()
+	jobMux := s.NewJobMux()
+	emailMux := s.NewEmailMux()
+	authMux := s.NewAuthRouter() // public
 
-	apiRouter := http.NewServeMux()
+	// these are protected
+	appMux := http.NewServeMux()
+	appMux.Handle("/job/", http.StripPrefix("/job", jobMux))
+	appMux.Handle("/email/", http.StripPrefix("/email", emailMux))
 
-	jobRouter := s.NewJobMux()
-	emailRouter := s.NewEmailMux()
+	protectedMiddleware := MiddlewareChain(Logging, Authorization)
+	publicMiddleware := MiddlewareChain(Logging)
 
-	apiRouter.HandleFunc("/health", s.HandlehealthCheck)
-	apiRouter.Handle("/job/", http.StripPrefix("/job", jobRouter))
-	apiRouter.Handle("/email/", http.StripPrefix("/email", emailRouter))
+	apiMux := http.NewServeMux()
 
-	middleware := MiddlewareChain(
-		Logging,
-	)
+	apiMux.Handle("/auth/", publicMiddleware(http.StripPrefix("/auth", authMux)))
+	apiMux.HandleFunc("/health", s.HandlehealthCheck)
 
-	router.Handle("/api/v1/", http.StripPrefix("/api/v1", middleware(apiRouter)))
+	apiMux.Handle("/", protectedMiddleware(appMux))
 
-	server := http.Server{
+	root := http.NewServeMux()
+	root.Handle("/api/v1/", http.StripPrefix("/api/v1", apiMux))
+
+	srv := http.Server{
 		Addr:    s.Addr,
-		Handler: router,
+		Handler: root,
 	}
-
 	log.Printf("Server has started %s", s.Addr)
-
-	return server.ListenAndServe()
+	return srv.ListenAndServe()
 }
 
 func (s *Server) HandlehealthCheck(w http.ResponseWriter, r *http.Request) {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"time"
 )
@@ -73,4 +74,11 @@ func WithTx(db *sql.DB, ctx context.Context, fn func(*sql.Tx) error) error {
 	}
 
 	return nil
+}
+
+func Getenv(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
 }

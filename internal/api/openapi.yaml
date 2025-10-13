@@ -9,7 +9,90 @@ tags:
   - name: Tact
     description: used by Tact application
 
+# co-founder GPT wrote this with me
+
 paths:
+  /auth/{provider}/login:
+    get:
+      summary: Start OAuth login (may redirect or set cookie)
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            example: google
+      responses:
+        "302":
+          description: >
+            Redirects either to the provider’s login page **or** directly to
+            the frontend if session already valid.
+          headers:
+            Location:
+              description: Target redirect URL.
+              schema:
+                type: string
+                format: uri
+            Set-Cookie:
+              schema:
+                type: string
+                example: >
+                  auth=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.
+                  eyJzdWIiOiIxMjM0NTYiLCJwcm92aWRlciI6ImdpdGh1YiJ9.
+                  C4Z7l0xZkq1W4g7x9sKk7PqY3wH2; Path=/; Max-Age=2592000;
+                  HttpOnly; Secure; SameSite=Lax
+
+  /auth/{provider}/callback:
+    get:
+      summary: OAuth callback (sets cookie after successful login)
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "302":
+          description: Redirect to frontend after successful login
+          headers:
+            Location:
+              description: Frontend redirect URL after login.
+              schema:
+                type: string
+                format: uri
+            Set-Cookie:
+              description: >
+                Session cookie containing a JWT.  
+                Marked HttpOnly, Secure, and SameSite=Lax for safety.
+              schema:
+                type: string
+                example: >
+                  auth=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.
+                  eyJzdWIiOiIxMjM0NTYiLCJwcm92aWRlciI6ImdpdGh1YiJ9.
+                  C4Z7l0xZkq1W4g7x9sKk7PqY3wH2; Path=/; Max-Age=2592000;
+                  HttpOnly; Secure; SameSite=Lax
+        "400":
+          description: OAuth error or invalid callback
+
+  /auth/user:
+    get:
+      summary: Get current user profile (requires auth cookie)
+      security:
+        - cookieAuth: []
+      responses:
+        "200":
+          description: Current user profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  email: { type: string, format: email }
+                  name: { type: string }
+        "401":
+          description: Missing or invalid session cookie
+
   /job/{id}:
     get:
       summary: Get a single job
@@ -227,6 +310,12 @@ paths:
           description: Audience list not found
 
 components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: auth
+
   schemas:
     Error:
       type: object
@@ -235,6 +324,39 @@ components:
         error:
           type: string
           example: The requested job could not be found.
+
+    User:
+      type: object
+      additionalProperties: false
+      required:
+        - user_id
+        - email
+      properties:
+        user_id:
+          type: string
+          description: Stable user identifier (e.g., database or subject/`sub` claim).
+          example: user_123
+        email:
+          type: string
+          format: email
+          example: lee@example.com
+        name:
+          type: string
+          description: Full display name.
+          example: Lee Jones
+        nick_name:
+          type: string
+          description: Short handle or nickname.
+          example: leej
+        avatar_url:
+          type: string
+          format: uri
+          description: Public URL to the avatar image.
+          example: https://cdn.example.com/avatars/user_123.png
+        provider:
+          type: string
+          description: OAuth provider that authenticated the session.
+          example: github
 
     Job:
       oneOf:

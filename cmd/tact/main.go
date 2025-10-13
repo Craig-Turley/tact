@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/Craig-Turley/task-scheduler.git/internal/api"
+	"github.com/Craig-Turley/task-scheduler.git/internal/auth"
 	"github.com/Craig-Turley/task-scheduler.git/pkg/idgen"
 	"github.com/joho/godotenv"
 	_ "github.com/mattn/go-sqlite3"
@@ -20,6 +21,7 @@ func main() {
 
 	idgen.Init(node)
 
+	auth.NewAuth()
 	server := api.NewServer(":8080")
 	log.Println(server.Run())
 }
