@@ -85,11 +85,8 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  id: { type: string }
-                  email: { type: string, format: email }
-                  name: { type: string }
+                $ref: '#/components/schemas/User'
+
         "401":
           description: Missing or invalid session cookie
 
@@ -167,6 +164,55 @@ paths:
                     email_data:
                       job_id: "147258369012345678"
                       list_id: "998877665544332211"
+
+  /job/user/{user_id}:
+    get:
+      summary: Get all job IDs for a user
+      description: >
+        Returns the list of job IDs owned by the specified user.
+        (Server may later validate that the path user_id matches the current session.)
+      tags: [Tact]
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          description: The provider-scoped user identifier (e.g., "github|1234567").
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserJobsResponse'
+              examples:
+                sample:
+                  value:
+                    ids:
+                      - "147258369012345678"
+                      - "147258369012345679"
+                      - "147258369012345680"
+        '400':
+          description: Bad request (missing or invalid user_id)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                missingUserId:
+                  value:
+                    error: "No User Id provided in the path"
+        '404':
+          description: User or jobs not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                notFound:
+                  value:
+                    error: "The requested resource could not be found."
 
   /email/list:
     post:
@@ -357,6 +403,19 @@ components:
           type: string
           description: OAuth provider that authenticated the session.
           example: github
+    
+    UserJobsResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        ids:
+          type: array
+          description: List of job IDs for the user.
+          items:
+            type: string
+            description: Snowflake ID as a string.
+            example: "147258369012345678"
+      required: [ids]
 
     Job:
       oneOf:
