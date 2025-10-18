@@ -137,6 +137,32 @@ func (s *Server) HandleGetJob(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type HandleGetUserJobsResponse struct {
+	JobIds []snowflake.ID `json:"ids"`
+}
+
+// TODO: verify this against the current session user id
+func (s *Server) HandleGetUserJobs(w http.ResponseWriter, r *http.Request) {
+	userId := r.PathValue("user_id")
+	if len(userId) == 0 {
+		s.badRequestResponse(w, r, utils.NewError("No User Id provided in the path"))
+		return
+	}
+
+	r.URL.Query().Get("type")
+
+	ids, err := s.Store.Jobs.GetUserJobs(r.Context(), userId, &repos.GetUserJobOpts{})
+	if err != nil {
+		s.notFoundResponse(w, r, err)
+		return
+	}
+
+	if err := s.jsonResponse(w, http.StatusOK, HandleGetUserJobsResponse{JobIds: ids}); err != nil {
+		s.internalServerError(w, r, err)
+		return
+	}
+}
+
 func (s *Server) hydratePostJob(ctx context.Context, j *job.Job, data []byte) (any, error) {
 	switch j.Type {
 	case job.TypeEmail:
@@ -317,7 +343,7 @@ func (s *Server) authorizeAndRedirectUser(user goth.User, w http.ResponseWriter,
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, err := token.SignedString([]byte(auth.JWTSecret))
+	signedToken, err := token.SignedString([]byte(auth.JWTSecret))
 	if err != nil {
 		s.clientErrorRedirect(w, r, err)
 		return
@@ -325,7 +351,7 @@ func (s *Server) authorizeAndRedirectUser(user goth.User, w http.ResponseWriter,
 
 	http.SetCookie(w, &http.Cookie{
 		Name:  auth.CookieName,
-		Value: signed,
+		Value: signedToken,
 		Path:  "/",
 		// Domain: omit on localhost
 		MaxAge:   24 * 3600,
@@ -361,9 +387,9 @@ func (s *Server) HandleGetUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := jwt.Parse(c.Value, func(t *jwt.Token) (any, error) { return auth.JWTSecret, nil })
+	token, err := jwt.Parse(c.Value, func(t *jwt.Token) (any, error) { return []byte(auth.JWTSecret), nil })
 	if err != nil || !token.Valid {
-		http.Error(w, "invalid session", http.StatusUnauthorized)
+		s.unauthorizedErrorResponse(w, r, err)
 		return
 	}
 
@@ -391,6 +417,7 @@ func (s *Server) NewAuthRouter() http.Handler {
 	router.HandleFunc("GET /{provider}", s.HandleGetAuth)
 	router.HandleFunc("GET /{provider}/callback", s.HandleAuthCallback)
 	router.HandleFunc("GET /user", s.HandleGetUser)
+	router.HandleFunc("POST /logout", s.HandleGetLogout)
 
 	return router
 }
@@ -400,6 +427,7 @@ func (s *Server) NewJobMux() http.Handler {
 
 	router.HandleFunc("POST /new", s.HandlePostJob)
 	router.HandleFunc("GET /{id}", s.HandleGetJob)
+	router.HandleFunc("GET /user/{user_id}", s.HandleGetUserJobs)
 
 	return router
 }
@@ -437,7 +465,7 @@ func (s *Server) Run() error {
 	apiMux.Handle("/", protectedMiddleware(appMux))
 
 	root := http.NewServeMux()
-	root.Handle("/api/v1/", http.StripPrefix("/api/v1", apiMux))
+	root.Handle("/api/v1/", http.StripPrefix("/api/v1", EnableCors(apiMux)))
 
 	srv := http.Server{
 		Addr:    s.Addr,

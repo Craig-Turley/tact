@@ -11,9 +11,14 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+type GetUserJobOpts struct {
+	JobType *job.JobType
+}
+
 type JobRepo interface {
 	CreateJob(ctx context.Context, job *job.Job) (*job.Job, error)
 	GetJob(ctx context.Context, id snowflake.ID) (*job.Job, error)
+	GetUserJobs(ctx context.Context, userId string, opts *GetUserJobOpts) ([]snowflake.ID, error)
 	DeleteJob(ctx context.Context, id snowflake.ID) error
 }
 
@@ -63,6 +68,43 @@ func (s *SqliteJobRepo) GetJob(ctx context.Context, id snowflake.ID) (*job.Job, 
 
 	return &job, nil
 }
+
+func (s *SqliteJobRepo) GetUserJobs(ctx context.Context, userId string, opts *GetUserJobOpts) ([]snowflake.ID, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	query := "SELECT id FROM jobs WHERE user_id = ?"
+	args := []any{userId}
+
+	if opts != nil {
+		if opts.JobType != nil {
+			query += " AND type = ?"
+			args = append(args, uint8(*opts.JobType))
+		}
+	}
+
+	rows, err := s.store.QueryContext(ctx, query, args)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var res []snowflake.ID
+	for rows.Next() {
+		var id snowflake.ID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		res = append(res, id)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return res, nil
+}
+
 func (s *SqliteJobRepo) DeleteJob(ctx context.Context, id snowflake.ID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

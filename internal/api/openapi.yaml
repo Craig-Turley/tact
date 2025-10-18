@@ -90,6 +90,19 @@ paths:
         "401":
           description: Missing or invalid session cookie
 
+  /auth/logout:
+    post:
+      summary: Invalidates the user's current auth cookie
+      operationId: logoutUser
+      tags: [Auth]
+      security:
+        - cookieAuth: []
+      responses:
+        "204":
+          description: Successfully logged out
+        "401":
+          description: Missing or invalid session cookie
+
   /job/{id}:
     get:
       summary: Get a single job

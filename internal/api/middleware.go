@@ -12,11 +12,29 @@ import (
 
 type Middleware func(h http.Handler) http.Handler
 
+// type for the Logging middleware to get status for logging purposes
+type WrappedWriter struct {
+	http.ResponseWriter
+	Status int
+}
+
+func NewWrappedWriter(w http.ResponseWriter) *WrappedWriter {
+	return &WrappedWriter{
+		ResponseWriter: w,
+	}
+}
+
+func (w *WrappedWriter) WriteHeader(statusCode int) {
+	w.Status = statusCode
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
 func Logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		next.ServeHTTP(w, r)
-		log.Println(r.Method, r.URL.Path, time.Since(start))
+		wrappedWriter := NewWrappedWriter(w)
+		next.ServeHTTP(wrappedWriter, r)
+		log.Println(r.Method, r.URL.Path, wrappedWriter.Status, time.Since(start))
 	})
 }
 
@@ -36,6 +54,22 @@ func Authorization(next http.Handler) http.Handler {
 
 		if _, err := auth.VerifyToken(tokenStr); err != nil {
 			UnauthorizedErrorResponse(w, r, utils.NewError("Invalid token"))
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func EnableCors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
 			return
 		}
 
