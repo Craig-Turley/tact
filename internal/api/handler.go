@@ -157,7 +157,7 @@ func (s *Server) HandleGetUserJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.jsonResponse(w, http.StatusOK, HandleGetUserJobsResponse{JobIds: ids}); err != nil {
+	if err := s.jsonResponse(w, http.StatusOK, ids); err != nil {
 		s.internalServerError(w, r, err)
 		return
 	}
@@ -211,7 +211,7 @@ func (s *Server) HandlePostCreateList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data.ListId = newId
-	if err := s.jsonResponse(w, http.StatusOK, ListResponse{ListId: newId}); err != nil {
+	if err := s.jsonResponse(w, http.StatusOK, newId); err != nil {
 		s.internalServerError(w, r, err)
 		return
 	}
@@ -247,7 +247,7 @@ type SubscribeRequest struct {
 const KEY_LIST_ID = "list_id"
 
 func (s *Server) HandleGetList(w http.ResponseWriter, r *http.Request) {
-	listIdParam := r.URL.Query().Get("list_id")
+	listIdParam := r.PathValue("list_id")
 	if len(listIdParam) == 0 {
 		s.badRequestResponse(w, r, utils.NewError("Error reading http path param"))
 		return
@@ -255,7 +255,7 @@ func (s *Server) HandleGetList(w http.ResponseWriter, r *http.Request) {
 
 	listId, err := snowflake.ParseBase64(listIdParam)
 	if err != nil {
-		s.badRequestResponse(w, r, utils.NewError("Error reading http path param"))
+		s.badRequestResponse(w, r, utils.NewError("Error parsing id"))
 		return
 	}
 
@@ -265,8 +265,7 @@ func (s *Server) HandleGetList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload := SubscribeRequest{Subscribers: subscribers}
-	if err := s.jsonResponse(w, http.StatusOK, payload); err != nil {
+	if err := s.jsonResponse(w, http.StatusOK, subscribers); err != nil {
 		s.internalServerError(w, r, err)
 		return
 	}
@@ -468,8 +467,8 @@ func (s *Server) NewEmailMux() http.Handler {
 	router := http.NewServeMux()
 
 	router.HandleFunc("POST /list", s.HandlePostCreateList)
-	router.HandleFunc("GET /list/{list_id}", s.HandleGetList)
 	router.HandleFunc("GET /lists/{user_id}", s.HandleGetEmailLists)
+	router.HandleFunc("GET /list/{list_id}", s.HandleGetList) // TODO: fix this
 	router.HandleFunc("POST /list/{list_id}/subscribe", s.HandlePostSubscribeToList)
 	router.HandleFunc("POST /template", s.HandlePostTemplate)
 
