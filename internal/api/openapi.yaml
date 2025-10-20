@@ -543,7 +543,7 @@ components:
         - listId
         - isSubscribed
 
-            CreateListRequest:
+    CreateListRequest:
       type: object
       required: [name, user_id]
       properties:
