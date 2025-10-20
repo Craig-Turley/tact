@@ -192,6 +192,10 @@ func (s *Server) hydrateGetJob(ctx context.Context, j *job.Job) (any, error) {
 	return nil, utils.NewError("Job type %d not supported in hydrateGetJob", j.Type)
 }
 
+type ListResponse struct {
+	ListId snowflake.ID `json:"list_id"`
+}
+
 // NOTE: modifies data
 func (s *Server) HandlePostCreateList(w http.ResponseWriter, r *http.Request) {
 	data := email.EmailListData{}
@@ -207,7 +211,30 @@ func (s *Server) HandlePostCreateList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data.ListId = newId
-	if err := s.jsonResponse(w, http.StatusOK, newId); err != nil {
+	if err := s.jsonResponse(w, http.StatusOK, ListResponse{ListId: newId}); err != nil {
+		s.internalServerError(w, r, err)
+		return
+	}
+}
+
+type GetEmailListsResponse struct {
+	Lists []*email.EmailListData `json:"lists"`
+}
+
+func (s *Server) HandleGetEmailLists(w http.ResponseWriter, r *http.Request) {
+	userId := r.PathValue("user_id")
+	if len(userId) == 0 {
+		s.badRequestResponse(w, r, utils.NewError("Error reading http path param"))
+		return
+	}
+
+	data, err := s.Store.Email.GetEmailLists(r.Context(), userId)
+	if err != nil {
+		s.badRequestResponse(w, r, err)
+		return
+	}
+
+	if err := s.jsonResponse(w, http.StatusOK, data); err != nil {
 		s.internalServerError(w, r, err)
 		return
 	}
@@ -239,13 +266,7 @@ func (s *Server) HandleGetList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	payload := SubscribeRequest{Subscribers: subscribers}
-	bytes, err := json.Marshal(payload)
-	if err != nil {
-		s.internalServerError(w, r, nil)
-		return
-	}
-
-	if err := s.jsonResponse(w, http.StatusOK, bytes); err != nil {
+	if err := s.jsonResponse(w, http.StatusOK, payload); err != nil {
 		s.internalServerError(w, r, err)
 		return
 	}
@@ -259,7 +280,7 @@ func (s *Server) HandlePostSubscribeToList(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	parsedId, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	parsedId, err := strconv.ParseInt(r.PathValue("list_id"), 10, 64)
 	if err != nil {
 		s.badRequestResponse(w, r, utils.NewError("Invalid ID in request"))
 		return
@@ -282,7 +303,7 @@ func (s *Server) HandlePostSubscribeToList(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) HandleGetListSubscribers(w http.ResponseWriter, r *http.Request) {
-	parsedId, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	parsedId, err := strconv.ParseInt(r.PathValue("list_id"), 10, 64)
 	if err != nil {
 		s.badRequestResponse(w, r, utils.NewError("Error parsing list Id"))
 		return
@@ -404,6 +425,17 @@ func (s *Server) HandleGetUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) HandleGetLogout(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     auth.CookieName,
+		Value:    "",
+		Path:     "/",
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
 	if err := gothic.Logout(w, r); err != nil {
 		s.unauthorizedErrorResponse(w, r, err)
 	}
@@ -436,9 +468,9 @@ func (s *Server) NewEmailMux() http.Handler {
 	router := http.NewServeMux()
 
 	router.HandleFunc("POST /list", s.HandlePostCreateList)
-	router.HandleFunc("GET /list", s.HandleGetList)
-	router.HandleFunc("POST /list/{id}/subscribe", s.HandlePostSubscribeToList)
-	router.HandleFunc("GET /list/{id}", s.HandleGetListSubscribers)
+	router.HandleFunc("GET /list/{list_id}", s.HandleGetList)
+	router.HandleFunc("GET /lists/{user_id}", s.HandleGetEmailLists)
+	router.HandleFunc("POST /list/{list_id}/subscribe", s.HandlePostSubscribeToList)
 	router.HandleFunc("POST /template", s.HandlePostTemplate)
 
 	return router

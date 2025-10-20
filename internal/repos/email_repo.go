@@ -19,6 +19,7 @@ type EmailRepo interface {
 	GetEmailData(ctx context.Context, jobId snowflake.ID) (*email.EmailData, error)
 	CreateEmailList(ctx context.Context, listData *email.EmailListData) (snowflake.ID, error)
 	DeleteEmailList(ctx context.Context, listId snowflake.ID) error
+	GetEmailLists(ctx context.Context, userId string) ([]*email.EmailListData, error)
 	GetEmailListSubscribers(ctx context.Context, listId snowflake.ID) ([]*email.SubscriberInformation, error)
 	AddToEmailList(ctx context.Context, listId snowflake.ID, subs []*email.SubscriberInformation) error
 	RemoveFromList(ctx context.Context, subId snowflake.ID) error
@@ -74,10 +75,10 @@ func (s *SqliteEmailRepo) CreateEmailList(ctx context.Context, data *email.Email
 	data.ListId = idgen.NewId()
 
 	query := `
-		INSERT INTO email_lists (id, name)
-		VALUES (?, ?)
+		INSERT INTO email_lists (id, name, user_id)
+		VALUES (?, ?, ?)
 	`
-	_, err := s.store.ExecContext(ctx, query, data.ListId, data.Name)
+	_, err := s.store.ExecContext(ctx, query, data.ListId, data.Name, data.UserId)
 	return data.ListId, err
 }
 
@@ -88,6 +89,27 @@ func (s *SqliteEmailRepo) DeleteEmailList(ctx context.Context, listId snowflake.
 	`
 	_, err := s.store.ExecContext(ctx, query, listId)
 	return err
+}
+
+func (s *SqliteEmailRepo) GetEmailLists(ctx context.Context, userId string) ([]*email.EmailListData, error) {
+	query := `
+		SELECT id, name, user_id FROM email_lists
+		WHERE user_id = ?
+	`
+
+	result, err := s.store.QueryContext(ctx, query, userId)
+	if err != nil {
+		return nil, err
+	}
+
+	var lists []*email.EmailListData
+	for result.Next() {
+		var list email.EmailListData
+		result.Scan(&list.ListId, &list.Name, &list.UserId)
+		lists = append(lists, &list)
+	}
+
+	return lists, nil
 }
 
 func (s *SqliteEmailRepo) GetEmailListSubscribers(ctx context.Context, listId snowflake.ID) ([]*email.SubscriberInformation, error) {

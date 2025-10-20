@@ -229,97 +229,109 @@ paths:
 
   /email/list:
     post:
-      summary: Create email-data association (job ↔ list)
+      summary: Create a new audience list
+      description: Creates a contact list owned by a user and returns its `list_id`.
       tags: [Tact]
+      security:
+        - cookieAuth: []
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/EmailListData'
-            examples:
-              create:
-                value:
-                  job_id: "147258369012345678"
-                  list_id: "998877665544332211"
-                  name: "New product release"
+              $ref: '#/components/schemas/CreateListRequest'
       responses:
-        '200':
-          description: Created
+        '201':
+          description: List created
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  list_id:
-                    type: string
-                  name:
-                    type: string
-                example:
-                  list_id: "998877665544332211"
-                  name: "New product release"
+                $ref: '#/components/schemas/CreateListResponse'
         '400':
           description: Invalid payload
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-              example:
-                error: "job_id and list_id are required"
-        '404':
-          description: Related resource not found (job or list)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-              example:
-                error: "job or list not found"
+        '401':
+          description: Unauthorized
+        '409':
+          description: Conflict
 
+  /email/lists/{user_id}:
     get:
-      summary: List email-data associations
+      summary: Get all lists for a user
+      description: Returns all audience lists owned by the specified user.
       tags: [Tact]
+      security:
+        - cookieAuth: []
       parameters:
-        - in: query
-          name: list_id
-          required: false
-          description: Filter associations by list_id
+        - in: path
+          name: user_id
+          required: true
           schema:
             type: string
+          description: The owner’s user ID.
       responses:
         '200':
           description: OK
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/EmailListData'
-              examples:
-                listAll:
-                  value:
-                    - job_id: "147258369012345678"
-                      list_id: "998877665544332211"
-                      name: "New product release"
+                $ref: '#/components/schemas/EmailListsResponse'
+        '401':
+          description: Unauthorized
         '404':
-          description: No associations found (when filtering)
+          description: User not found
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-              example:
-                error: "no email-data found for job_id 147258369012345678"
 
-  /email/list/{id}/subscribe:
-    post:
-      summary: Send a list of subscriber information for subscription to a list
+  /email/list/{list_id}:
+    get:
+      summary: Get subscribers for a list
+      description: Returns the subscribers associated with a particular audience list.
       tags: [Tact]
+      security:
+        - cookieAuth: []
       parameters:
         - in: path
-          name: id
+          name: list_id
           required: true
-          description: The audience list ID
           schema:
             type: string
+          description: The audience list ID.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListSubscribersResponse'
+        '401':
+          description: Unauthorized
+        '404':
+          description: List not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /email/list/{list_id}/subscribe:
+    post:
+      summary: Subscribe contacts to a list
+      description: Accepts an array of subscriber objects and subscribes them to the list.
+      tags: [Tact]
+      security:
+        - cookieAuth: []
+      parameters:
+        - in: path
+          name: list_id
+          required: true
+          schema:
+            type: string
+          description: The audience list ID.
       requestBody:
         required: true
         content:
@@ -330,43 +342,21 @@ paths:
                 $ref: '#/components/schemas/SubscriberInformation'
       responses:
         '202':
-          description: Subscription request accepted
-
-  /email/list/{id}:
-    get:
-      summary: Get a list of subscriber information associated with a particular audience list
-      tags: [Tact]
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: The audience list ID
-          schema:
-            type: string
-      responses:
-        '200':
-          description: A list of subscribers for the specified audience list
+          description: Accepted for processing
+        '400':
+          description: Invalid payload
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/SubscriberInformation'
-              example:
-                - id: "987654321098765432"
-                  firstName: "Jane"
-                  lastName: "Doe"
-                  email: "jane.doe@example.com"
-                  listId: "123456789012345678"
-                  isSubscribed: true
-                - id: "876543210987654321"
-                  firstName: "John"
-                  lastName: "Smith"
-                  email: "john.smith@example.com"
-                  listId: "123456789012345678"
-                  isSubscribed: false
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized
         '404':
-          description: Audience list not found
+          description: List not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
 components:
   securitySchemes:
@@ -478,17 +468,17 @@ components:
 
     EmailListData:
       type: object
-      required: [job_id, list_id]
+      required: [job_id, list_id, user_id]
       properties:
-        job_id:
-          type: string
-          description: Snowflake ID of the job
         list_id:
           type: string
           description: Snowflake ID of the list
         name:
           type: string
           description: User input name of the list
+        user_id:
+          type: string
+          description: User Id of the owner of the list provided by goth
 
     JobType:
       type: string
@@ -552,4 +542,41 @@ components:
         - email
         - listId
         - isSubscribed
+
+            CreateListRequest:
+      type: object
+      required: [name, user_id]
+      properties:
+        name:
+          type: string
+          example: Early Access
+        user_id:
+          type: string
+          example: github|1234567
+
+    CreateListResponse:
+      type: object
+      required: [list_id]
+      properties:
+        list_id:
+          type: string
+          example: "998877665544332211"
+
+    EmailListsResponse:
+      type: object
+      required: [lists]
+      properties:
+        lists:
+          type: array
+          items:
+            $ref: '#/components/schemas/EmailListData'
+
+    ListSubscribersResponse:
+      type: object
+      required: [subscribers]
+      properties:
+        subscribers:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubscriberInformation'
 

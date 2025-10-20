@@ -1,6 +1,8 @@
 package email
 
-import "github.com/bwmarrin/snowflake"
+import (
+	"github.com/bwmarrin/snowflake"
+)
 
 type Email string
 
@@ -46,11 +48,13 @@ func NewSubscriberInformation(
 type EmailListData struct {
 	ListId snowflake.ID `json:"list_id"`
 	Name   string       `json:"name"`
+	UserId string       `json:"user_id"` // provided by goth
 }
 
-func NewEmailListData(listId snowflake.ID, name string) *EmailListData {
+func NewEmailListData(listId snowflake.ID, name string, userId string) *EmailListData {
 	return &EmailListData{
 		ListId: listId,
 		Name:   name,
+		UserId: userId,
 	}
 }

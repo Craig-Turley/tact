@@ -3,7 +3,6 @@ package api
 import (
 	"log"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/Craig-Turley/task-scheduler.git/internal/auth"
@@ -40,20 +39,14 @@ func Logging(next http.Handler) http.Handler {
 
 func Authorization(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tokenHeader := r.Header.Get(auth.AUTHORIZATION_HEADER)
-		if len(tokenHeader) == 0 {
-			UnauthorizedErrorResponse(w, r, utils.NewError("Bearer token not provided"))
+		tokenCookie, err := r.Cookie(auth.CookieName)
+		if err != nil {
+			UnauthorizedErrorResponse(w, r, utils.NewError("Invalid Auth Cookie"))
 			return
 		}
 
-		tokenStr := strings.Trim(tokenHeader, auth.BEARER_PREFIX)
-		if len(tokenStr) == 0 {
-			UnauthorizedErrorResponse(w, r, utils.NewError("Bearer token not provided"))
-			return
-		}
-
-		if _, err := auth.VerifyToken(tokenStr); err != nil {
-			UnauthorizedErrorResponse(w, r, utils.NewError("Invalid token"))
+		if _, err := auth.VerifyToken(tokenCookie.Value); err != nil {
+			UnauthorizedErrorResponse(w, r, err)
 			return
 		}
 

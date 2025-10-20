@@ -23,9 +23,6 @@ var (
 	CookieSameSite = http.SameSiteLaxMode
 )
 
-const AUTHORIZATION_HEADER = "Authorization"
-const BEARER_PREFIX = "Bearer "
-
 // TODO: find a better way to pass isProd
 func NewAuth() {
 	key = utils.Getenv("SESSION_KEY", "")
@@ -64,7 +61,7 @@ func KeyFunc(token *jwt.Token) (any, error) {
 		return nil, utils.NewError("unexpected signing method: %v", token.Header["alg"])
 	}
 
-	return JWTSecret, nil
+	return []byte(JWTSecret), nil
 }
 
 var JWTParser = jwt.NewParser(
