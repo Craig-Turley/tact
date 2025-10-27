@@ -517,7 +517,7 @@ components:
 
     EmailListData:
       type: object
-      required: [list_id, name, user_id, subscribers]
+      required: [list_id, name, user_id, subscriber_count]
       properties:
         list_id:
           type: string
