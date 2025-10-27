@@ -192,10 +192,6 @@ func (s *Server) hydrateGetJob(ctx context.Context, j *job.Job) (any, error) {
 	return nil, utils.NewError("Job type %d not supported in hydrateGetJob", j.Type)
 }
 
-type ListResponse struct {
-	ListId snowflake.ID `json:"list_id"`
-}
-
 // NOTE: modifies data
 func (s *Server) HandlePostCreateList(w http.ResponseWriter, r *http.Request) {
 	data := email.EmailListData{}
@@ -215,10 +211,6 @@ func (s *Server) HandlePostCreateList(w http.ResponseWriter, r *http.Request) {
 		s.internalServerError(w, r, err)
 		return
 	}
-}
-
-type GetEmailListsResponse struct {
-	Lists []*email.EmailListData `json:"lists"`
 }
 
 func (s *Server) HandleGetEmailLists(w http.ResponseWriter, r *http.Request) {
@@ -253,9 +245,9 @@ func (s *Server) HandleGetList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	listId, err := snowflake.ParseBase64(listIdParam)
+	listId, err := snowflake.ParseString(listIdParam)
 	if err != nil {
-		s.badRequestResponse(w, r, utils.NewError("Error parsing id"))
+		s.badRequestResponse(w, r, utils.NewError("Error parsing id %s", listIdParam))
 		return
 	}
 
@@ -466,6 +458,7 @@ func (s *Server) NewJobMux() http.Handler {
 func (s *Server) NewEmailMux() http.Handler {
 	router := http.NewServeMux()
 
+	// TODO: organize endpoints and add an enpoint to get email data
 	router.HandleFunc("POST /list", s.HandlePostCreateList)
 	router.HandleFunc("GET /lists/{user_id}", s.HandleGetEmailLists)
 	router.HandleFunc("GET /list/{list_id}", s.HandleGetList) // TODO: fix this

@@ -46,9 +46,10 @@ func NewSubscriberInformation(
 }
 
 type EmailListData struct {
-	ListId snowflake.ID `json:"list_id"`
-	Name   string       `json:"name"`
-	UserId string       `json:"user_id"` // provided by goth
+	ListId          snowflake.ID `json:"list_id"`
+	Name            string       `json:"name"`
+	UserId          string       `json:"user_id"` // provided by goth
+	SubscriberCount int          `json:"subscriber_count"`
 }
 
 func NewEmailListData(listId snowflake.ID, name string, userId string) *EmailListData {

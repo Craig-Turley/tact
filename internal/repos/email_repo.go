@@ -93,8 +93,17 @@ func (s *SqliteEmailRepo) DeleteEmailList(ctx context.Context, listId snowflake.
 
 func (s *SqliteEmailRepo) GetEmailLists(ctx context.Context, userId string) ([]*email.EmailListData, error) {
 	query := `
-		SELECT id, name, user_id FROM email_lists
-		WHERE user_id = ?
+		SELECT 
+				l.id,
+				l.name,
+				l.user_id,
+				COUNT(s.id) AS subscriber_count
+		FROM email_lists l
+		LEFT JOIN subscribers s 
+				ON s.list_id = l.id 
+				AND s.is_subscribed = TRUE
+		WHERE l.user_id = ?
+		GROUP BY l.id, l.name, l.user_id;
 	`
 
 	result, err := s.store.QueryContext(ctx, query, userId)
@@ -105,7 +114,7 @@ func (s *SqliteEmailRepo) GetEmailLists(ctx context.Context, userId string) ([]*
 	var lists []*email.EmailListData
 	for result.Next() {
 		var list email.EmailListData
-		result.Scan(&list.ListId, &list.Name, &list.UserId)
+		result.Scan(&list.ListId, &list.Name, &list.UserId, &list.SubscriberCount)
 		lists = append(lists, &list)
 	}
 

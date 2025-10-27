@@ -517,7 +517,7 @@ components:
 
     EmailListData:
       type: object
-      required: [list_id, name, user_id]
+      required: [list_id, name, user_id, subscribers]
       properties:
         list_id:
           type: string
@@ -528,6 +528,9 @@ components:
         user_id:
           type: string
           description: User Id of the owner of the list provided by goth
+        subscriber_count:
+          type: number
+          description: Count of the number of subscribers subscribed
 
     JobType:
       type: string
