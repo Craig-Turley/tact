@@ -105,41 +105,67 @@ paths:
         "401":
           description: Missing or invalid session cookie
 
-  /job/{id}:
-    get:
-      summary: Get a single job
-      tags: [Tact]
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema: { type: string }
-      responses:
-        '200':
-          description: OK
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Job'
-              examples:
-                emailJob:
-                  summary: Email job
-                  value:
-                    job_id: "147258369012345678"
-                    name: "Welcome email"
-                    retry_limit: 3
-                    job_type: "email"
-                    email_data:
-                      job_id: "147258369012345678"
-                      list_id: "998877665544332211"
-        '404':
-          description: Job not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-              example:
-                error: The requested job could not be found.
+/job/user/{user_id}:
+  get:
+    summary: Get all job IDs for a user
+    description: >
+      Returns the list of job IDs owned by the specified user, wrapped in `data`.
+      (Server may later validate that the path user_id matches the current session.)
+    tags: [Tact]
+    parameters:
+      - in: path
+        name: user_id
+        required: true
+        description: The provider-scoped user identifier (e.g., "github|1234567").
+        schema:
+          type: string
+      - in: query
+        name: job_type
+        required: false
+        description: Optional filter to return only jobs of the given type.
+        schema:
+          $ref: '#/components/schemas/JobType'
+    responses:
+      '200':
+        description: OK
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Envelope'
+                - type: object
+                  properties:
+                    data:
+                      type: array
+                      items:
+                        type: number
+            examples:
+              sample:
+                value:
+                  data:
+                    - 147258369012345678
+                    - 147258369012345679
+                    - 147258369012345680
+      '400':
+        description: Bad request (missing or invalid user_id)
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Error'
+            examples:
+              missingUserId:
+                value:
+                  error: "No User Id provided in the path"
+      '404':
+        description: User or jobs not found
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Error'
+            examples:
+              notFound:
+                value:
+                  error: "The requested resource could not be found."
 
   /job/new:
     post:
@@ -532,18 +558,15 @@ components:
           type: number
           description: Count of the number of subscribers subscribed
 
-    JobType:
-      type: string
-      description: Public enum (string) mapped to backend uint8
-      enum: [start, custom, email, slack, discord, end]
-      example: email
-      x-internal-notes:
-        "start": 0
-        "custom": 1
-        "email": 2
-        "slack": 3
-        "discord": 4
-        "end": 5
+  components:
+    schemas:
+      JobType:
+        type: string
+        description: Public enum (string) mapped to backend uint8
+        enum: [start, custom, email, slack, discord, end]
+        example: email
+        x-enum-varnames: [TypeStart, TypeCustom, TypeEmail, TypeSlack, TypeDiscord, TypeEnd]
+        x-enum-values: [0, 1, 2, 3, 4, 5]
 
     JobTypeEmail:
       type: string

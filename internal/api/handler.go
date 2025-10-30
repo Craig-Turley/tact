@@ -232,9 +232,9 @@ func (s *Server) HandleGetEmailLists(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-type SubscribeRequest struct {
-	Subscribers []*email.SubscriberInformation `json:"subscribers"`
-}
+// type SubscribeRequest struct {
+// 	Subscribers []*email.SubscriberInformation `json:"subscribers"`
+// }
 
 const KEY_LIST_ID = "list_id"
 
@@ -265,7 +265,7 @@ func (s *Server) HandleGetList(w http.ResponseWriter, r *http.Request) {
 
 // NOTE: modifies data
 func (s *Server) HandlePostSubscribeToList(w http.ResponseWriter, r *http.Request) {
-	var req SubscribeRequest
+	var req []*email.SubscriberInformation
 	if err := readJSON(w, r, &req); err != nil {
 		s.badRequestResponse(w, r, err)
 		return
@@ -277,12 +277,7 @@ func (s *Server) HandlePostSubscribeToList(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	subs := []*email.SubscriberInformation{}
-	for _, s := range req.Subscribers {
-		subs = append(subs, email.NewSubscriberInformation(s.Id, s.FirstName, s.LastName, s.Email, s.ListId, s.IsSubscribed))
-	}
-
-	if err := s.Store.Email.AddToEmailList(r.Context(), snowflake.ID(parsedId), subs); err != nil {
+	if err := s.Store.Email.AddToEmailList(r.Context(), snowflake.ID(parsedId), req); err != nil {
 		s.multiStatusReponse(w, r, err)
 		return
 	}

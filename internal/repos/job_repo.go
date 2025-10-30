@@ -83,7 +83,7 @@ func (s *SqliteJobRepo) GetUserJobs(ctx context.Context, userId string, opts *Ge
 		}
 	}
 
-	rows, err := s.store.QueryContext(ctx, query, args)
+	rows, err := s.store.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
