@@ -206,62 +206,6 @@ paths:
                       job_id: "147258369012345678"
                       list_id: "998877665544332211"
 
-  /job/user/{user_id}:
-    get:
-      summary: Get all job IDs for a user
-      description: >
-        Returns the list of job IDs owned by the specified user, wrapped in `data`.
-        (Server may later validate that the path user_id matches the current session.)
-      tags: [Tact]
-      parameters:
-        - in: path
-          name: user_id
-          required: true
-          description: The provider-scoped user identifier (e.g., "github|1234567").
-          schema:
-            type: string
-      responses:
-        '200':
-          description: OK
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/Envelope'
-                  - type: object
-                    properties:
-                      data:
-                        type: array
-                        items:
-                          type: number
-              examples:
-                sample:
-                  value:
-                    data:
-                      - 147258369012345678
-                      - 147258369012345679
-                      - 147258369012345680
-        '400':
-          description: Bad request (missing or invalid user_id)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-              examples:
-                missingUserId:
-                  value:
-                    error: "No User Id provided in the path"
-        '404':
-          description: User or jobs not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-              examples:
-                notFound:
-                  value:
-                    error: "The requested resource could not be found."
-
   /email/list:
     post:
       summary: Create a new audience list
@@ -388,9 +332,11 @@ paths:
                   - list_id: "998877665544332211"
                     name: "Early Access"
                     user_id: "github|1234567"
+                    subscriber_count: 42
                   - list_id: "112233445566778899"
                     name: "Newsletter"
                     user_id: "github|1234567"
+                    subscriber_count: 7
         '401':
           description: Unauthorized
         '404':
@@ -420,7 +366,7 @@ paths:
           application/json:
             schema:
               type: array
-              subscribers:
+              items:
                 $ref: '#/components/schemas/SubscriberInformation'
       responses:
         '202':
@@ -555,7 +501,7 @@ components:
           type: string
           description: User Id of the owner of the list provided by goth
         subscriber_count:
-          type: number
+          type: integer
           description: Count of the number of subscribers subscribed
 
     JobType:
