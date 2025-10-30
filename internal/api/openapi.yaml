@@ -394,7 +394,7 @@ paths:
           application/json:
             schema:
               type: array
-              items:
+              subscribers:
                 $ref: '#/components/schemas/SubscriberInformation'
       responses:
         '202':
