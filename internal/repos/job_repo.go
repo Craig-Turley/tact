@@ -69,11 +69,11 @@ func (s *SqliteJobRepo) GetJob(ctx context.Context, id snowflake.ID) (*job.Job, 
 	return &job, nil
 }
 
-func (s *SqliteJobRepo) GetUserJobs(ctx context.Context, userId string, opts *GetUserJobOpts) ([]snowflake.ID, error) {
+func (s *SqliteJobRepo) GetUserJobs(ctx context.Context, userId string, opts *GetUserJobOpts) ([]*job.Job, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	query := "SELECT id FROM jobs WHERE user_id = ?"
+	query := "SELECT id, name, retry_limit, type, user_id FROM jobs WHERE user_id = ?"
 	args := []any{userId}
 
 	if opts != nil {
@@ -89,20 +89,20 @@ func (s *SqliteJobRepo) GetUserJobs(ctx context.Context, userId string, opts *Ge
 	}
 	defer rows.Close()
 
-	var res []snowflake.ID
+	var jobs []*job.Job
 	for rows.Next() {
-		var id snowflake.ID
-		if err := rows.Scan(&id); err != nil {
+		var j job.Job
+		if err := rows.Scan(&j.Id, &j.Name, &j.RetryLimit, &j.Type, &j.UserId); err != nil {
 			return nil, err
 		}
-		res = append(res, id)
+		jobs = append(jobs, &j)
 	}
 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	return res, nil
+	return jobs, nil
 }
 
 func (s *SqliteJobRepo) DeleteJob(ctx context.Context, id snowflake.ID) error {

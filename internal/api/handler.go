@@ -149,15 +149,28 @@ func (s *Server) HandleGetUserJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.URL.Query().Get("type")
+	jobTypeStr := r.URL.Query().Get("job_type")
+	opts := &repos.GetUserJobOpts{}
 
-	ids, err := s.Store.Jobs.GetUserJobs(r.Context(), userId, &repos.GetUserJobOpts{})
+	// TODO: clean this up
+	// set the job type filter
+	if len(jobTypeStr) != 0 {
+		jobType, err := job.StringToJobType(jobTypeStr)
+		if err != nil {
+			s.badRequestResponse(w, r, err)
+			return
+		}
+
+		opts.JobType = &jobType
+	}
+
+	jobs, err := s.Store.Jobs.GetUserJobs(r.Context(), userId, opts)
 	if err != nil {
 		s.notFoundResponse(w, r, err)
 		return
 	}
 
-	if err := s.jsonResponse(w, http.StatusOK, ids); err != nil {
+	if err := s.jsonResponse(w, http.StatusOK, jobs); err != nil {
 		s.internalServerError(w, r, err)
 		return
 	}

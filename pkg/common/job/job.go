@@ -38,6 +38,21 @@ func JobTypeToString(t JobType) string {
 	return "not found"
 }
 
+func StringToJobType(s string) (JobType, error) {
+	switch s {
+	case "custom":
+		return TypeCustom, nil
+	case "email":
+		return TypeEmail, nil
+	case "slack":
+		return TypeSlack, nil
+	case "discord":
+		return TypeDiscord, nil
+	}
+
+	return TypeStart, utils.NewError("No job type find for string %s", s)
+}
+
 type Job struct {
 	Id         snowflake.ID `json:"job_id"`
 	UserId     string       `json:"user_id"` // this is provided from goth

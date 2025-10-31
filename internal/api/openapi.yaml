@@ -107,10 +107,10 @@ paths:
 
   /job/user/{user_id}:
     get:
-      summary: Get all job IDs for a user
+      summary: Get all jobs for a user
       description: >
-        Returns the list of job IDs owned by the specified user, wrapped in `data`.
-        (Server may later validate that the path user_id matches the current session.)
+        Returns base job records associated with a user. Use the optional
+        `job_type` filter to limit results to a specific type.
       tags: [Tact]
       parameters:
         - in: path
@@ -138,14 +138,23 @@ paths:
                       data:
                         type: array
                         items:
-                          type: number
+                          $ref: '#/components/schemas/JobBase'
               examples:
                 sample:
                   value:
                     data:
-                      - 147258369012345678
-                      - 147258369012345679
-                      - 147258369012345680
+                      - job_id: "147258369012345678"
+                        name: "Welcome email"
+                        retry_limit: 3
+                        job_type: "email"
+                      - job_id: "147258369012345679"
+                        name: "Custom preprocess"
+                        retry_limit: 5
+                        job_type: "custom"
+                      - job_id: "147258369012345680"
+                        name: "Slack notifier"
+                        retry_limit: 2
+                        job_type: "slack"
         '400':
           description: Bad request (missing or invalid user_id)
           content:
