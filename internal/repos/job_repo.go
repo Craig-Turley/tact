@@ -18,7 +18,7 @@ type GetUserJobOpts struct {
 type JobRepo interface {
 	CreateJob(ctx context.Context, job *job.Job) (*job.Job, error)
 	GetJob(ctx context.Context, id snowflake.ID) (*job.Job, error)
-	GetUserJobs(ctx context.Context, userId string, opts *GetUserJobOpts) ([]snowflake.ID, error)
+	GetUserJobs(ctx context.Context, userId string, opts *GetUserJobOpts) ([]*job.Job, error)
 	DeleteJob(ctx context.Context, id snowflake.ID) error
 }
 
