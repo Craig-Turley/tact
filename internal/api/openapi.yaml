@@ -185,18 +185,17 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/Job'
+              $ref: '#/components/schemas/JobInput'
             examples:
               emailJob:
-                summary: Email job
+                summary: Email job (flat)
                 value:
-                  job_id: "147258369012345678"
                   name: "Welcome email"
                   retry_limit: 3
                   job_type: "email"
-                  email_data:
-                    job_id: "147258369012345678"
-                    list_id: "998877665544332211"
+                  list_id: "998877665544332211"
+                  template: "welcome_v1"
+                  subject: "Welcome!"
       responses:
         '201':
           description: Job created
@@ -211,9 +210,9 @@ paths:
                     name: "Welcome email"
                     retry_limit: 3
                     job_type: "email"
-                    email_data:
-                      job_id: "147258369012345678"
-                      list_id: "998877665544332211"
+                    list_id: "998877665544332211"
+                    template: "welcome_v1"
+                    subject: "Welcome!"
 
   /email/list:
     post:
@@ -450,6 +449,7 @@ components:
           description: OAuth provider that authenticated the session.
           example: github
 
+    # ---------- JOBS (READ/OUTPUT) ----------
     Job:
       oneOf:
         - $ref: '#/components/schemas/EmailJob'
@@ -478,26 +478,58 @@ components:
       allOf:
         - $ref: '#/components/schemas/JobBase'
         - type: object
-          required: [email_data]
           properties:
             job_type:
               $ref: '#/components/schemas/JobTypeEmail'
-            email_data:
-              $ref: '#/components/schemas/EmailData'
+            list_id:
+              type: string
+              description: Snowflake ID of the list
+            template:
+              type: string
+              description: Template identifier or content
+            subject:
+              type: string
+              description: The subject of the email being sent
+          required: [list_id, template, subject]
 
-    EmailData:
+    # ---------- JOBS (CREATE/INPUT) ----------
+    JobInput:
+      oneOf:
+        - $ref: '#/components/schemas/EmailJobInput'
+      discriminator:
+        propertyName: job_type
+        mapping:
+          email: '#/components/schemas/EmailJobInput'
+      description: Payload for creating a new job (no job_id).
+
+    JobBaseInput:
       type: object
-      required: [job_id, list_id]
+      required: [name, retry_limit, job_type]
       properties:
-        job_id:
+        name:
           type: string
-          description: Snowflake ID of the job
-        list_id:
-          type: string
-          description: Snowflake ID of the list
-        subject:
-          type: string
-          description: The subject of the email being sent
+        retry_limit:
+          type: integer
+        job_type:
+          $ref: '#/components/schemas/JobType'
+
+    EmailJobInput:
+      allOf:
+        - $ref: '#/components/schemas/JobBaseInput'
+        - type: object
+          properties:
+            job_type:
+              $ref: '#/components/schemas/JobTypeEmail'
+            list_id:
+              type: string
+              description: Snowflake ID of the list
+            template:
+              type: string
+              description: Template identifier or content
+            subject:
+              type: string
+              description: The subject of the email being sent
+          required: [list_id, template, subject]
 
     EmailListData:
       type: object
