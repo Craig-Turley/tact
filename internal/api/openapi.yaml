@@ -187,12 +187,12 @@ paths:
             schema:
               $ref: '#/components/schemas/JobInput'
             examples:
-              emailJob:
-                summary: Email job (flat)
+              emailJobIntType:
+                summary: Email job (flat, integer job_type)
                 value:
                   name: "Welcome email"
                   retry_limit: 3
-                  job_type: "email"
+                  job_type: 2        # <— integer accepted
                   list_id: "998877665544332211"
                   template: "welcome_v1"
                   subject: "Welcome!"
@@ -204,12 +204,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/Job'
               examples:
-                emailJob:
+                emailJobIntType:
                   value:
                     job_id: "147258369012345678"
                     name: "Welcome email"
                     retry_limit: 3
-                    job_type: "email"
+                    job_type: 2
                     list_id: "998877665544332211"
                     template: "welcome_v1"
                     subject: "Welcome!"
@@ -449,16 +449,31 @@ components:
           description: OAuth provider that authenticated the session.
           example: github
 
+    JobTypeInt:
+      type: integer
+      description: Public enum mapped to backend uint8
+      enum: [0, 1, 2, 3, 4, 5]
+      example: 2
+      x-enum-varnames: [TypeStart, TypeCustom, TypeEmail, TypeSlack, TypeDiscord, TypeEnd]
+
+    JobTypeString:
+      type: string
+      description: String labels for JobType
+      enum: [start, custom, email, slack, discord, end]
+      example: email
+
+    JobTypeValue:
+      description: Accepts either string or integer form of JobType.
+      oneOf:
+        - $ref: '#/components/schemas/JobTypeInt'
+        - $ref: '#/components/schemas/JobTypeString'
+
     # ---------- JOBS (READ/OUTPUT) ----------
     Job:
       oneOf:
         - $ref: '#/components/schemas/EmailJob'
-      discriminator:
-        propertyName: job_type
-        mapping:
-          email: '#/components/schemas/EmailJob'
       description: >
-        A job with common fields and type-specific payload. Discriminated by `job_type`.
+        A job with common fields and type-specific payload.
 
     JobBase:
       type: object
@@ -472,15 +487,20 @@ components:
         retry_limit:
           type: integer
         job_type:
-          $ref: '#/components/schemas/JobType'
+          $ref: '#/components/schemas/JobTypeValue'
 
     EmailJob:
       allOf:
         - $ref: '#/components/schemas/JobBase'
         - type: object
           properties:
+            # Constrain specifically to 'email' OR 2
             job_type:
-              $ref: '#/components/schemas/JobTypeEmail'
+              oneOf:
+                - type: string
+                  enum: [email]
+                - type: integer
+                  enum: [2]
             list_id:
               type: string
               description: Snowflake ID of the list
@@ -496,12 +516,8 @@ components:
     JobInput:
       oneOf:
         - $ref: '#/components/schemas/EmailJobInput'
-      discriminator:
-        propertyName: job_type
-        mapping:
-          email: '#/components/schemas/EmailJobInput'
       description: Payload for creating a new job (no job_id).
-
+      
     JobBaseInput:
       type: object
       required: [name, retry_limit, job_type]
@@ -511,15 +527,20 @@ components:
         retry_limit:
           type: integer
         job_type:
-          $ref: '#/components/schemas/JobType'
+          $ref: '#/components/schemas/JobTypeValue'
 
     EmailJobInput:
       allOf:
         - $ref: '#/components/schemas/JobBaseInput'
         - type: object
           properties:
+            # Constrain specifically to 'email' OR 2
             job_type:
-              $ref: '#/components/schemas/JobTypeEmail'
+              oneOf:
+                - type: string
+                  enum: [email]
+                - type: integer
+                  enum: [2]
             list_id:
               type: string
               description: Snowflake ID of the list
