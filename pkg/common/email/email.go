@@ -7,14 +7,16 @@ import (
 type Email string
 
 type EmailData struct {
-	JobId  snowflake.ID `json:"job_id"`
-	ListId snowflake.ID `json:"list_id"`
+	JobId   snowflake.ID `json:"job_id"`
+	ListId  snowflake.ID `json:"list_id"`
+	Subject string       `json:"subject"`
 }
 
-func NewEmailData(jobId, listId snowflake.ID) *EmailData {
+func NewEmailData(jobId, listId snowflake.ID, subject string) *EmailData {
 	return &EmailData{
-		JobId:  jobId,
-		ListId: listId,
+		JobId:   jobId,
+		ListId:  listId,
+		Subject: subject,
 	}
 }
 

@@ -46,12 +46,12 @@ func (s *SqliteEmailRepo) SaveEmailData(ctx context.Context, data *email.EmailDa
 
 func (s *SqliteEmailRepo) GetEmailData(ctx context.Context, jobId snowflake.ID) (*email.EmailData, error) {
 	var emailData email.EmailData
-	row := s.store.QueryRowContext(ctx, "SELECT * FROM email_job_data WHERE job_id = ?", jobId)
+	row := s.store.QueryRowContext(ctx, "SELECT job_id, list_id, subject FROM email_job_data WHERE job_id = ?", jobId)
 	if row.Err() != nil {
 		return nil, row.Err()
 	}
 
-	err := row.Scan(&emailData.JobId, &emailData.ListId)
+	err := row.Scan(&emailData.JobId, &emailData.ListId, &emailData.Subject)
 	if err != nil {
 		return nil, err
 	}
