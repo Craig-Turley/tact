@@ -39,8 +39,8 @@ func NewSqliteEmailRepo(db *sql.DB) *SqliteEmailRepo {
 }
 
 func (s *SqliteEmailRepo) SaveEmailData(ctx context.Context, data *email.EmailData) error {
-	query := "INSERT INTO email_job_data (job_id, list_id) VALUES (?, ?)"
-	_, err := s.store.ExecContext(ctx, query, data.JobId, data.ListId)
+	query := "INSERT INTO email_job_data (job_id, list_id, subject) VALUES (?, ?)"
+	_, err := s.store.ExecContext(ctx, query, data.JobId, data.ListId, data.Subject)
 	return err
 }
 
