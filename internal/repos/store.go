@@ -6,6 +6,7 @@ type Storage struct {
 	Jobs     JobRepo
 	Email    EmailRepo
 	Template TemplateStore
+	Schedule SchedulingRepo
 }
 
 func NewSqliteStore(db *sql.DB, templateStorePath string) *Storage {

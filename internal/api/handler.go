@@ -15,6 +15,7 @@ import (
 	"github.com/Craig-Turley/task-scheduler.git/internal/repos"
 	"github.com/Craig-Turley/task-scheduler.git/pkg/common/email"
 	"github.com/Craig-Turley/task-scheduler.git/pkg/common/job"
+	"github.com/Craig-Turley/task-scheduler.git/pkg/common/schedule"
 	"github.com/Craig-Turley/task-scheduler.git/pkg/common/user"
 	"github.com/Craig-Turley/task-scheduler.git/pkg/utils"
 	"github.com/bwmarrin/snowflake"
@@ -54,11 +55,17 @@ func (s *Server) HandlePostJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// get the jobInfo out of the body and hydrate correct data
+	// get the jobInfo out of the body and schedule data and then hydrate correct data
 	var jobInfo job.Job
 	if err := json.Unmarshal(body, &jobInfo); err != nil {
 		log.Println("Error Parsing job", err)
-		http.Error(w, "Malformed Request. Error parsing job details", http.StatusBadRequest)
+		s.badRequestResponse(w, r, err)
+		return
+	}
+
+	if err := jobInfo.Validate(); err != nil {
+		log.Println("Invalid request body")
+		s.badRequestResponse(w, r, err)
 		return
 	}
 
@@ -68,10 +75,27 @@ func (s *Server) HandlePostJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var schedulePayload schedule.ScheduleData
+	if err := json.Unmarshal(body, &schedulePayload); err != nil {
+		log.Println("Error Parsing schedule", err)
+		s.Store.Jobs.DeleteJob(r.Context(), newJob.Id) // roll back this saga
+		s.badRequestResponse(w, r, err)
+		return
+	}
+
+	scheduleData, err := s.Store.Schedule.ScheduleEvent(r.Context(), &schedulePayload)
+	if err != nil {
+		log.Println("Error Parsing schedule", err)
+		s.Store.Jobs.DeleteJob(r.Context(), newJob.Id) // roll back this saga
+		s.internalServerError(w, r, err)
+		return
+	}
+
 	data, err := s.hydratePostJob(r.Context(), newJob, body)
 	if err != nil {
 		log.Println("Error in hydrateJob", err)
-		s.Store.Jobs.DeleteJob(r.Context(), newJob.Id) // roll back this saga
+		s.Store.Jobs.DeleteJob(r.Context(), newJob.Id)             // roll back this saga
+		s.Store.Schedule.DeleteEvent(r.Context(), scheduleData.Id) // roll back this saga
 		s.badRequestResponse(w, r, err)
 		return
 	}

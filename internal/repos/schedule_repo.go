@@ -1,19 +1,22 @@
 package repos
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 
 	"github.com/Craig-Turley/task-scheduler.git/pkg/common/job"
 	"github.com/Craig-Turley/task-scheduler.git/pkg/common/schedule"
+	"github.com/Craig-Turley/task-scheduler.git/pkg/idgen"
 	"github.com/bwmarrin/snowflake"
 	_ "github.com/mattn/go-sqlite3"
 )
 
 type SchedulingRepo interface {
-	ScheduleEvent(event *schedule.ScheduleData) error
-	GetJobsDueBefore(iso string) ([]*job.JobEvent, error)
-	UpdateJobStatus(jobId snowflake.ID, status schedule.Status) error
+	ScheduleEvent(ctx context.Context, event *schedule.ScheduleData) (*schedule.ScheduleData, error)
+	DeleteEvent(ctx context.Context, id snowflake.ID) error
+	GetJobsDueBefore(ctx context.Context, iso string) ([]*job.JobEvent, error)
+	UpdateJobStatus(ctx context.Context, jobId snowflake.ID, status schedule.Status) error
 }
 
 type SqliteSchedulingRepo struct {
@@ -26,9 +29,20 @@ func NewSqliteSchedulingRepo(db *sql.DB) *SqliteSchedulingRepo {
 	}
 }
 
-func (s SqliteSchedulingRepo) ScheduleEvent(event *schedule.ScheduleData) error {
+func (s SqliteSchedulingRepo) ScheduleEvent(ctx context.Context, event *schedule.ScheduleData) (*schedule.ScheduleData, error) {
+	event.Id = idgen.NewId()
 	query := "INSERT INTO scheduling (id, job_id, run_at, status) VALUES (?, ?, ?, ?)"
-	_, err := s.store.Exec(query, event.Id, event.JobId, event.RunAt, event.Status)
+	_, err := s.store.ExecContext(ctx, query, event.Id, event.JobId, event.RunAt, event.Status)
+	if err != nil {
+		return nil, errors.New("Error inserting into table")
+	}
+
+	return event, nil
+}
+
+func (s SqliteSchedulingRepo) DeleteEvent(ctx context.Context, id snowflake.ID) error {
+	query := "DELETE FROM scheduling s WHERE s.id = ?"
+	_, err := s.store.Exec(query, id)
 	if err != nil {
 		return errors.New("Error inserting into table")
 	}
@@ -36,7 +50,7 @@ func (s SqliteSchedulingRepo) ScheduleEvent(event *schedule.ScheduleData) error 
 	return nil
 }
 
-func (s SqliteSchedulingRepo) GetJobsDueBefore(iso string) ([]*job.JobEvent, error) {
+func (s SqliteSchedulingRepo) GetJobsDueBefore(ctx context.Context, iso string) ([]*job.JobEvent, error) {
 	query := "SELECT j.id, j.name, j.retry_limit, j.type, s.id AS schedule_id FROM jobs j JOIN scheduling s ON s.job_id=j.id WHERE s.run_at < ? AND s.status = ?"
 	rows, err := s.store.Query(query, iso, schedule.StatusScheduled)
 	if err != nil {
@@ -58,9 +72,9 @@ func (s SqliteSchedulingRepo) GetJobsDueBefore(iso string) ([]*job.JobEvent, err
 	return entries, nil
 }
 
-func (s SqliteSchedulingRepo) UpdateJobStatus(id snowflake.ID, status schedule.Status) error {
+func (s SqliteSchedulingRepo) UpdateJobStatus(ctx context.Context, jobId snowflake.ID, status schedule.Status) error {
 	query := "UPDATE scheduling SET status = ? WHERE id = ?"
-	_, err := s.store.Exec(query, status, id)
+	_, err := s.store.ExecContext(ctx, query, status, jobId)
 
 	// TODO handle the case where multiple rows are updated
 	// should only be one
