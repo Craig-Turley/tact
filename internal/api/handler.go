@@ -71,6 +71,7 @@ func (s *Server) HandlePostJob(w http.ResponseWriter, r *http.Request) {
 
 	newJob, err := s.Store.Jobs.CreateJob(r.Context(), &jobInfo)
 	if err != nil {
+		log.Println(err)
 		s.internalServerError(w, r, nil)
 		return
 	}

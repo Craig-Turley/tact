@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"database/sql"
+	"log"
 	"sync"
 
 	"github.com/Craig-Turley/task-scheduler.git/pkg/common/job"
@@ -42,8 +43,8 @@ func (s *SqliteJobRepo) CreateJob(ctx context.Context, job *job.Job) (*job.Job, 
 	defer s.mu.Unlock()
 
 	job.Id = idgen.NewId()
-	query := "INSERT INTO jobs (id, name, retry_limit, type) VALUES (?, ?, ?, ?)"
-	_, err := s.store.ExecContext(ctx, query, job.Id, job.Name, job.RetryLimit, job.Type)
+	query := "INSERT INTO jobs (id, user_id, name, retry_limit, type) VALUES (?, ?, ?, ?, ?)"
+	_, err := s.store.ExecContext(ctx, query, job.Id, job.UserId, job.Name, job.RetryLimit, job.Type)
 	if err != nil {
 		return nil, err
 	}

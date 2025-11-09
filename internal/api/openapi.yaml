@@ -147,14 +147,17 @@ paths:
                         name: "Welcome email"
                         retry_limit: 3
                         job_type: "email"
+                        user_id: "github|1234567"
                       - job_id: "147258369012345679"
                         name: "Custom preprocess"
                         retry_limit: 5
                         job_type: "custom"
+                        user_id: "github|1234567"
                       - job_id: "147258369012345680"
                         name: "Slack notifier"
                         retry_limit: 2
                         job_type: "slack"
+                        user_id: "github|1234567"
         '400':
           description: Bad request (missing or invalid user_id)
           content:
@@ -192,7 +195,8 @@ paths:
                 value:
                   name: "Welcome email"
                   retry_limit: 3
-                  job_type: 2        
+                  job_type: 2
+                  user_id: "github|1234567"
                   list_id: "998877665544332211"
                   template: "welcome_v1"
                   subject: "Welcome!"
@@ -210,6 +214,7 @@ paths:
                     name: "Welcome email"
                     retry_limit: 3
                     job_type: 2
+                    user_id: "github|1234567"
                     list_id: "998877665544332211"
                     template: "welcome_v1"
                     subject: "Welcome!"
@@ -243,7 +248,7 @@ paths:
                   - type: object
                     properties:
                       data:
-                        type: string 
+                        type: string
                         example: "998877665544332211"
         '400':
           description: Invalid payload
@@ -477,7 +482,7 @@ components:
 
     JobBase:
       type: object
-      required: [job_id, name, retry_limit, job_type]
+      required: [job_id, name, retry_limit, job_type, user_id]
       properties:
         job_id:
           type: string
@@ -488,6 +493,10 @@ components:
           type: integer
         job_type:
           $ref: '#/components/schemas/JobTypeValue'
+        user_id:
+          type: string
+          description: The provider-scoped user identifier associated with this job.
+          example: github|1234567
 
     EmailJob:
       allOf:
@@ -517,20 +526,19 @@ components:
       oneOf:
         - $ref: '#/components/schemas/EmailJobInput'
       description: Payload for creating a new job (no job_id).
-      
+
     JobBaseInput:
       type: object
-      required: [name, retry_limit, job_type]
+      required: [name, retry_limit, job_type, user_id]
       properties:
         name:
           type: string
         retry_limit:
           type: integer
-        # run_at:
-        #   type: string
-        #   format: date-time  #ISO 8601
-        #   writeOnly: true
-        #   description: Timestamp with timezone, e.g. 2025-08-27T11:13:31Z or 2025-08-27T11:13:31-07:00.
+        user_id:
+          type: string
+          description: The provider-scoped user identifier associated with this job.
+          example: github|1234567
         job_type:
           $ref: '#/components/schemas/JobTypeValue'
 
