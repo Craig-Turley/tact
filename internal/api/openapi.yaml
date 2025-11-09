@@ -520,17 +520,17 @@ components:
       
     JobBaseInput:
       type: object
-      required: [name, retry_limit, job_type, run_at]
+      required: [name, retry_limit, job_type]
       properties:
         name:
           type: string
         retry_limit:
           type: integer
-        run_at:
-          type: string
-          format: date-time  #ISO 8601
-          writeOnly: true
-          description: Timestamp with timezone, e.g. 2025-08-27T11:13:31Z or 2025-08-27T11:13:31-07:00.
+        # run_at:
+        #   type: string
+        #   format: date-time  #ISO 8601
+        #   writeOnly: true
+        #   description: Timestamp with timezone, e.g. 2025-08-27T11:13:31Z or 2025-08-27T11:13:31-07:00.
         job_type:
           $ref: '#/components/schemas/JobTypeValue'
 

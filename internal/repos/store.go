@@ -14,5 +14,6 @@ func NewSqliteStore(db *sql.DB, templateStorePath string) *Storage {
 		Jobs:     NewSqliteJobRepo(db),
 		Email:    NewSqliteEmailRepo(db),
 		Template: NewLocalTemplateStore(templateStorePath),
+		Schedule: NewSqliteSchedulingRepo(db),
 	}
 }

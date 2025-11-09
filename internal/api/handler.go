@@ -75,27 +75,10 @@ func (s *Server) HandlePostJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var schedulePayload schedule.ScheduleData
-	if err := json.Unmarshal(body, &schedulePayload); err != nil {
-		log.Println("Error Parsing schedule", err)
-		s.Store.Jobs.DeleteJob(r.Context(), newJob.Id) // roll back this saga
-		s.badRequestResponse(w, r, err)
-		return
-	}
-
-	scheduleData, err := s.Store.Schedule.ScheduleEvent(r.Context(), &schedulePayload)
-	if err != nil {
-		log.Println("Error Parsing schedule", err)
-		s.Store.Jobs.DeleteJob(r.Context(), newJob.Id) // roll back this saga
-		s.internalServerError(w, r, err)
-		return
-	}
-
 	data, err := s.hydratePostJob(r.Context(), newJob, body)
 	if err != nil {
 		log.Println("Error in hydrateJob", err)
-		s.Store.Jobs.DeleteJob(r.Context(), newJob.Id)             // roll back this saga
-		s.Store.Schedule.DeleteEvent(r.Context(), scheduleData.Id) // roll back this saga
+		s.Store.Jobs.DeleteJob(r.Context(), newJob.Id) // roll back this saga
 		s.badRequestResponse(w, r, err)
 		return
 	}
@@ -466,6 +449,38 @@ func (s *Server) HandleGetLogout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, nil)
 }
 
+// TODO: test this
+func (s *Server) HandlePostScheduleJob(w http.ResponseWriter, r *http.Request) {
+	var schedulePayload schedule.ScheduleData
+	if err := readJSON(w, r, &schedulePayload); err != nil {
+		log.Println("Error Parsing schedule", err)
+		s.badRequestResponse(w, r, err)
+		return
+	}
+
+	t, err := time.Parse(utils.TIME_FORMAT, schedulePayload.RunAt)
+	if err != nil {
+		log.Println("Invalid time format", err)
+		s.badRequestResponse(w, r, utils.NewError("Bad time format want %s", utils.TIME_FORMAT))
+		return
+	}
+
+	// normalizing to utc
+	schedulePayload.RunAt = t.UTC().Format(utils.TIME_FORMAT)
+
+	scheduleData, err := s.Store.Schedule.ScheduleEvent(r.Context(), &schedulePayload)
+	if err != nil {
+		log.Println("Error Parsing schedule", err)
+		s.internalServerError(w, r, err)
+		return
+	}
+
+	if err := s.jsonResponse(w, http.StatusOK, scheduleData); err != nil {
+		s.internalServerError(w, r, err)
+		return
+	}
+}
+
 func (s *Server) NewAuthRouter() http.Handler {
 	router := http.NewServeMux()
 
@@ -500,15 +515,26 @@ func (s *Server) NewEmailMux() http.Handler {
 	return router
 }
 
+func (s *Server) NewScheduleMux() http.Handler {
+	router := http.NewServeMux()
+
+	router.HandleFunc("POST /new", s.HandlePostScheduleJob)
+
+	return router
+}
+
 func (s *Server) Run() error {
 	jobMux := s.NewJobMux()
 	emailMux := s.NewEmailMux()
-	authMux := s.NewAuthRouter() // public
+	scheduleMux := s.NewScheduleMux()
+	// this is public - maybe more in the future not sure rn
+	authMux := s.NewAuthRouter()
 
 	// these are protected
 	appMux := http.NewServeMux()
 	appMux.Handle("/job/", http.StripPrefix("/job", jobMux))
 	appMux.Handle("/email/", http.StripPrefix("/email", emailMux))
+	appMux.Handle("/schedule/", http.StripPrefix("/schedule", scheduleMux))
 
 	protectedMiddleware := MiddlewareChain(Logging, Authorization)
 	publicMiddleware := MiddlewareChain(Logging)
