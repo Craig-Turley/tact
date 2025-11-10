@@ -464,10 +464,7 @@ paths:
         content:
           application/json:
             schema:
-              allOf:
-                - $ref: '#/components/schemas/ScheduleData'
-                - type: object
-                  required: [run_at, user_id]
+              $ref: '#/components/schemas/ScheduleCreateRequest'
       responses:
         '201':
           description: Schedule created
@@ -770,6 +767,23 @@ components:
           example: "2025-01-01T12:00:00Z"
         status:
           $ref: '#/components/schemas/ScheduleStatus'
+
+    ScheduleCreateRequest:
+      type: object
+      description: Payload for creating a new schedule.
+      required:
+        - run_at
+        - user_id
+      properties:
+        run_at:
+          type: string
+          format: date-time
+          description: When the job should run (ISO 8601).
+          example: "2025-01-01T12:00:00Z"
+        user_id:
+          type: string
+          description: The provider-scoped user identifier.
+          example: "github|1234567"
 
     ScheduleStatus:
       type: string
