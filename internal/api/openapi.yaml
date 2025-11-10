@@ -784,6 +784,10 @@ components:
           type: string
           description: The provider-scoped user identifier.
           example: "github|1234567"
+        job_id:
+          type: string
+          description: Id of the desired job to schedule
+          exmaple: "1960661954280296448"
 
     ScheduleStatus:
       type: string
