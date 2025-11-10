@@ -3,7 +3,6 @@ package repos
 import (
 	"context"
 	"database/sql"
-	"log"
 	"sync"
 
 	"github.com/Craig-Turley/task-scheduler.git/pkg/common/job"

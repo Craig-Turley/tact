@@ -31,6 +31,7 @@ func StatusToString(s Status) string {
 type ScheduleData struct {
 	Id     snowflake.ID
 	JobId  snowflake.ID
+	UserId string `json:"user_id"`
 	RunAt  string `json:"run_at"`
 	Status Status
 }

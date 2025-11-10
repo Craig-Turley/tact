@@ -399,6 +399,100 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /schedule/{user_id}:
+    get:
+      summary: Get all schedules for a user
+      description: Returns all scheduled jobs associated with the given user, including schedule and base job data.
+      tags: [Tact]
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          description: The provider-scoped user identifier (e.g., "github|1234567").
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  allOf:
+                    - $ref: '#/components/schemas/ScheduleData'
+                    - $ref: '#/components/schemas/JobBase'
+              examples:
+                sample:
+                  value:
+                    - id: "147258369012345670"
+                      job_id: "147258369012345678"
+                      user_id: "github|1234567"
+                      run_at: "2025-01-01T12:00:00Z"
+                      status: "pending"
+                      name: "Welcome email"
+                      retry_limit: 3
+                      job_type: "email"
+                    - id: "147258369012345671"
+                      job_id: "147258369012345679"
+                      user_id: "github|1234567"
+                      run_at: "2025-01-02T12:00:00Z"
+                      status: "completed"
+                      name: "Custom preprocess"
+                      retry_limit: 5
+                      job_type: "custom"
+        '400':
+          description: Bad request (missing or invalid user_id)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: User or schedules not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /schedule/new:
+    post:
+      summary: Create a new schedule
+      description: Create a schedule for a given user. Only `run_at` and `user_id` are required in the request.
+      tags: [Tact]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/ScheduleData'
+                - type: object
+                  required: [run_at, user_id]
+      responses:
+        '201':
+          description: Schedule created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ScheduleData'
+                  - type: object
+                    required: [id, job_id, user_id, run_at, status]
+              examples:
+                created:
+                  value:
+                    id: "147258369012345680"
+                    job_id: "147258369012345678"
+                    user_id: "github|1234567"
+                    run_at: "2025-01-01T12:00:00Z"
+                    status: "pending"
+        '400':
+          description: Invalid payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
 components:
   securitySchemes:
     cookieAuth:
@@ -650,3 +744,35 @@ components:
         user_id:
           type: string
           example: github|1234567
+
+    ScheduleData:
+      type: object
+      description: Schedule information for a job.
+      properties:
+        id:
+          type: string
+          format: snowflake
+          description: Unique identifier for the schedule (snowflake.ID).
+          example: "147258369012345670"
+        job_id:
+          type: string
+          format: snowflake
+          description: Associated job identifier (snowflake.ID).
+          example: "147258369012345678"
+        user_id:
+          type: string
+          description: The provider-scoped user identifier.
+          example: "github|1234567"
+        run_at:
+          type: string
+          format: date-time
+          description: When the job should run (ISO 8601).
+          example: "2025-01-01T12:00:00Z"
+        status:
+          $ref: '#/components/schemas/ScheduleStatus'
+
+    ScheduleStatus:
+      type: string
+      description: Current status of the schedule.
+      enum: [pending, running, completed, failed, canceled]
+      example: pending

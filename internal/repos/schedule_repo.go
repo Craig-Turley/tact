@@ -31,8 +31,8 @@ func NewSqliteSchedulingRepo(db *sql.DB) *SqliteSchedulingRepo {
 
 func (s SqliteSchedulingRepo) ScheduleEvent(ctx context.Context, event *schedule.ScheduleData) (*schedule.ScheduleData, error) {
 	event.Id = idgen.NewId()
-	query := "INSERT INTO scheduling (id, job_id, run_at, status) VALUES (?, ?, ?, ?)"
-	_, err := s.store.ExecContext(ctx, query, event.Id, event.JobId, event.RunAt, event.Status)
+	query := "INSERT INTO scheduling (id, job_id, run_at, status, user_id) VALUES (?, ?, ?, ?, ?)"
+	_, err := s.store.ExecContext(ctx, query, event.Id, event.JobId, event.RunAt, event.Status, event.UserId)
 	if err != nil {
 		return nil, errors.New("Error inserting into table")
 	}

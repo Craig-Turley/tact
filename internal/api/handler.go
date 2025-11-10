@@ -459,6 +459,12 @@ func (s *Server) HandlePostScheduleJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(schedulePayload.UserId) == 0 {
+		log.Println("No user_id provided when scheduling job")
+		s.badRequestResponse(w, r, utils.NewError("No user id provided"))
+		return
+	}
+
 	t, err := time.Parse(utils.TIME_FORMAT, schedulePayload.RunAt)
 	if err != nil {
 		log.Println("Invalid time format", err)
@@ -481,6 +487,8 @@ func (s *Server) HandlePostScheduleJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 }
+
+func (s *Server) HandleGetUserScheuledJobs(w http.ResponseWriter, r *http.Request) {}
 
 func (s *Server) NewAuthRouter() http.Handler {
 	router := http.NewServeMux()
@@ -520,6 +528,7 @@ func (s *Server) NewScheduleMux() http.Handler {
 	router := http.NewServeMux()
 
 	router.HandleFunc("POST /new", s.HandlePostScheduleJob)
+	router.HandleFunc("GET /{user_id}", s.HandleGetUserScheuledJobs)
 
 	return router
 }
