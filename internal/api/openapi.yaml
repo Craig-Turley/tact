@@ -459,17 +459,14 @@ paths:
   /schedule/new:
     post:
       summary: Create a new schedule
-      description: Create a schedule for a given user. Only `run_at` and `user_id` are required in the request.
+      description: Create a schedule for a given user. `job_id`, `run_at`, and `user_id` are required in the request.
       tags: [Tact]
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              allOf:
-                - $ref: '#/components/schemas/ScheduleData'
-                - type: object
-                  required: [job_id, user_id, run_at]
+              $ref: '#/components/schemas/ScheduleCreateRequest'
       responses:
         '201':
           description: Schedule created
@@ -480,20 +477,6 @@ paths:
                   - $ref: '#/components/schemas/ScheduleData'
                   - type: object
                     required: [id, job_id, user_id, run_at, status]
-              examples:
-                created:
-                  value:
-                    id: "147258369012345680"
-                    job_id: "147258369012345678"
-                    user_id: "github|1234567"
-                    run_at: "2025-01-01T12:00:00Z"
-                    status: "pending"
-        '400':
-          description: Invalid payload
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
 
 components:
   securitySchemes:
@@ -769,6 +752,30 @@ components:
           example: "2025-01-01T12:00:00Z"
         status:
           $ref: '#/components/schemas/ScheduleStatus'
+
+    ScheduleCreateRequest:
+      type: object
+      description: Payload for creating a new schedule.
+      required:
+        - job_id
+        - user_id
+        - run_at
+      additionalProperties: false
+      properties:
+        job_id:
+          type: string
+          format: snowflake
+          description: Associated job identifier (snowflake.ID).
+          example: "147258369012345678"
+        user_id:
+          type: string
+          description: The provider-scoped user identifier.
+          example: "github|1234567"
+        run_at:
+          type: string
+          format: date-time
+          description: When the job should run (ISO 8601).
+          example: "2025-01-01T12:00:00Z"
 
     ScheduleStatus:
       type: string
