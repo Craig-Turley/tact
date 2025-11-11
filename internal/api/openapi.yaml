@@ -422,7 +422,6 @@ paths:
                   allOf:
                     - $ref: '#/components/schemas/ScheduleData'
                     - type: object
-                      # For GET responses, all ScheduleData fields are required
                       required: [id, job_id, user_id, run_at, status]
                     - $ref: '#/components/schemas/JobBase'
               examples:
@@ -772,10 +771,21 @@ components:
           $ref: '#/components/schemas/ScheduleStatus'
 
     ScheduleCreateRequest:
-      allOf:
-        - $ref: '#/components/schemas/ScheduleData'
-        - type: object
-          required: [run_at, user_id]
+      type: object
+      description: Schedule information for a job.
+      properties:
+        user_id:
+          type: string
+          description: The provider-scoped user identifier.
+          example: "github|1234567"
+        run_at:
+          type: string
+          format: date-time
+          description: When the job should run (ISO 8601).
+          example: "2025-01-01T12:00:00Z"
+      required:
+        - user_id 
+        - run_at 
 
     ScheduleStatus:
       type: string
