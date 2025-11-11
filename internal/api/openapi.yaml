@@ -466,8 +466,10 @@ paths:
         content:
           application/json:
             schema:
-              # For POST requests, require run_at and user_id
-              $ref: '#/components/schemas/ScheduleCreateRequest'
+              allOf:
+                - $ref: '#/components/schemas/ScheduleData'
+                - type: object
+                  required: [job_id, user_id, run_at]
       responses:
         '201':
           description: Schedule created
@@ -477,7 +479,6 @@ paths:
                 allOf:
                   - $ref: '#/components/schemas/ScheduleData'
                   - type: object
-                    # Response includes fully populated schedule
                     required: [id, job_id, user_id, run_at, status]
               examples:
                 created:
@@ -615,7 +616,6 @@ components:
               description: The subject of the email being sent
           required: [list_id, template, subject]
 
-    # ---------- JOBS (CREATE/INPUT) ----------
     JobInput:
       oneOf:
         - $ref: '#/components/schemas/EmailJobInput'
@@ -769,23 +769,6 @@ components:
           example: "2025-01-01T12:00:00Z"
         status:
           $ref: '#/components/schemas/ScheduleStatus'
-
-    ScheduleCreateRequest:
-      type: object
-      description: Schedule information for a job.
-      properties:
-        user_id:
-          type: string
-          description: The provider-scoped user identifier.
-          example: "github|1234567"
-        run_at:
-          type: string
-          format: date-time
-          description: When the job should run (ISO 8601).
-          example: "2025-01-01T12:00:00Z"
-      required:
-        - user_id 
-        - run_at 
 
     ScheduleStatus:
       type: string
