@@ -64,13 +64,13 @@ paths:
                 format: uri
             Set-Cookie:
               description: >
-                Session cookie containing a JWT.  
+                Session cookie containing a JWT.
                 Marked HttpOnly, Secure, and SameSite=Lax for safety.
               schema:
                 type: string
                 example: >
                   auth=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.
-                  eyJzdWIiOiIxMjM0NTYiLCJwcm92aWRlciI6ImdpdGh1YiJ9.
+                  eyJzdWIiOiIxMjM0NTYiLCJwcm92aWRlciI6ImdpdGh1Yl9pZCJ9.
                   C4Z7l0xZkq1W4g7x9sKk7PqY3wH2; Path=/; Max-Age=2592000;
                   HttpOnly; Secure; SameSite=Lax
         "400":
@@ -421,6 +421,9 @@ paths:
                 items:
                   allOf:
                     - $ref: '#/components/schemas/ScheduleData'
+                    - type: object
+                      # For GET responses, all ScheduleData fields are required
+                      required: [id, job_id, user_id, run_at, status]
                     - $ref: '#/components/schemas/JobBase'
               examples:
                 sample:
@@ -464,6 +467,7 @@ paths:
         content:
           application/json:
             schema:
+              # For POST requests, require run_at and user_id
               $ref: '#/components/schemas/ScheduleCreateRequest'
       responses:
         '201':
@@ -474,6 +478,7 @@ paths:
                 allOf:
                   - $ref: '#/components/schemas/ScheduleData'
                   - type: object
+                    # Response includes fully populated schedule
                     required: [id, job_id, user_id, run_at, status]
               examples:
                 created:
@@ -594,7 +599,6 @@ components:
         - $ref: '#/components/schemas/JobBase'
         - type: object
           properties:
-            # Constrain specifically to 'email' OR 2
             job_type:
               oneOf:
                 - type: string
@@ -638,7 +642,6 @@ components:
         - $ref: '#/components/schemas/JobBaseInput'
         - type: object
           properties:
-            # Constrain specifically to 'email' OR 2
             job_type:
               oneOf:
                 - type: string
@@ -769,26 +772,10 @@ components:
           $ref: '#/components/schemas/ScheduleStatus'
 
     ScheduleCreateRequest:
-      type: object
-      description: Payload for creating a new schedule.
-      required:
-        - run_at
-        - user_id
-        - job_id
-      properties:
-        run_at:
-          type: string
-          format: date-time
-          description: When the job should run (ISO 8601).
-          example: "2025-01-01T12:00:00Z"
-        user_id:
-          type: string
-          description: The provider-scoped user identifier.
-          example: "github|1234567"
-        job_id:
-          type: string
-          description: Id of the desired job to schedule
-          example: "1960661954280296448"
+      allOf:
+        - $ref: '#/components/schemas/ScheduleData'
+        - type: object
+          required: [run_at, user_id]
 
     ScheduleStatus:
       type: string
